@@ -61,7 +61,9 @@ static UIVisualEffect *Glass(void) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return self.visible.count; }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+    if (indexPath.row >= (NSInteger)self.visible.count) return cell;
     NSArray *choice = self.visible[indexPath.row];
+    if (choice.count < 2) return cell;
     cell.textLabel.text = choice[1];
     cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     cell.textLabel.adjustsFontForContentSizeCategory = YES;
@@ -74,6 +76,7 @@ static UIVisualEffect *Glass(void) {
     return cell;
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.row >= (NSInteger)self.visible.count) return;
     if (MTSet(self.key, self.visible[indexPath.row][0])) {
         [self.tableView reloadData];
         [self.navigationController popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
@@ -112,6 +115,7 @@ static UIVisualEffect *Glass(void) {
 @property (nonatomic, strong) UISearchController *search;
 @property (nonatomic, strong) UIView *hero;
 @property (nonatomic, strong) UIVisualEffectView *glass;
+@property (nonatomic, assign) CGFloat heroWidth;
 @end
 
 @implementation MTSettingsController
@@ -187,9 +191,11 @@ static UIVisualEffect *Glass(void) {
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGFloat width = self.tableView.bounds.size.width;
+    if (width <= 0 || width == self.heroWidth) return;
+    self.heroWidth = width;
     CGFloat height = [self.hero systemLayoutSizeFittingSize:CGSizeMake(width, 0) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height;
-    if (height > 0 && (fabs(height - self.hero.bounds.size.height) > 1 || fabs(width - self.hero.bounds.size.width) > 1)) {
-        self.hero.frame = CGRectMake(0, 0, width, height);
+    if (height > 0 && isfinite(height)) {
+        self.hero.frame = CGRectMake(0, 0, width, ceil(height));
         self.tableView.tableHeaderView = self.hero;
     }
 }
@@ -215,12 +221,17 @@ static UIVisualEffect *Glass(void) {
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return self.sections.count; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return [self.sections[section][@"rows"] count]; }
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section { return self.sections[section][@"title"]; }
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section { return section < (NSInteger)self.sections.count ? self.sections[section][@"title"] : nil; }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     return section == (NSInteger)self.sections.count - 1 ? MTText(@"Параметры сохраняются на устройстве. Серые переключатели означают, что обработчик не найден. iOS 27 ещё не проверена.", @"Preferences stay on device. Disabled switches mean a hook was not found. iOS 27 has not been verified.") : nil;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSDictionary *row = self.sections[indexPath.section][@"rows"][indexPath.row];
+    NSArray *sections = self.sections;
+    UITableViewCell *empty = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+    if (indexPath.section >= (NSInteger)sections.count) return empty;
+    NSArray *rows = sections[indexPath.section][@"rows"];
+    if (indexPath.row >= (NSInteger)rows.count) return empty;
+    NSDictionary *row = rows[indexPath.row];
     NSString *key = row[@"key"], *kind = row[@"kind"];
     BOOL info = [kind isEqual:@"info"], log = [kind isEqual:@"diagnostics"];
     BOOL available = MTAvailable(key) || info || log;
@@ -263,7 +274,11 @@ static UIVisualEffect *Glass(void) {
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    NSDictionary *row = self.sections[indexPath.section][@"rows"][indexPath.row];
+    NSArray *sections = self.sections;
+    if (indexPath.section >= (NSInteger)sections.count) return;
+    NSArray *rows = sections[indexPath.section][@"rows"];
+    if (indexPath.row >= (NSInteger)rows.count) return;
+    NSDictionary *row = rows[indexPath.row];
     NSString *kind = row[@"kind"], *key = row[@"key"];
     if ([kind isEqual:@"info"] || (!MTAvailable(key) && ![kind isEqual:@"diagnostics"])) {
         MTShowMessage(self, row[@"title"], row[@"detail"]);

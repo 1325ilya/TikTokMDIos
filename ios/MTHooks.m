@@ -451,14 +451,42 @@ void MTInstallHooks(void) {
     MTInstallAppearance();
 }
 
-static void MTCrash(NSException *exception) {
+static void MTCrashRecord(NSString *text) {
     @try {
         NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
         NSMutableArray *log = [[defaults stringArrayForKey:@"diary"] mutableCopy] ?: [NSMutableArray array];
-        [log addObject:[NSString stringWithFormat:@"%@  Crash: %@ — %@", NSDate.date, exception.name, exception.reason ?: @"?"]];
+        [log addObject:[NSString stringWithFormat:@"%@  Crash: %@", NSDate.date, text]];
         if (log.count > 80) [log removeObjectsInRange:NSMakeRange(0, log.count - 80)];
         [defaults setObject:log forKey:@"diary"];
+        [defaults setObject:text forKey:@"last_crash"];
     } @catch (NSException *ignored) { }
+}
+
+static void MTCrash(NSException *exception) {
+    MTCrashRecord([NSString stringWithFormat:@"%@ — %@", exception.name, exception.reason ?: @"?"]);
+}
+
+static void MTSignal(int sig) {
+    const char *name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGBUS ? "SIGBUS" : sig == SIGABRT ? "SIGABRT" : "SIGTRAP";
+    MTCrashRecord([NSString stringWithFormat:@"%s in %s", name, [NSThread.callStackSymbols[2] UTF8String] ?: "?"]);
+    signal(sig, SIG_DFL);
+}
+
+static void MTCrashAlert(NSString *crash, NSUInteger tries) {
+    if (tries > 15) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(tries ? 2 * NSEC_PER_SEC : 0)), dispatch_get_main_queue(), ^{
+        UIViewController *top = MTTopController(MTActiveWindow());
+        if (!top || !top.view.window) MTCrashAlert(crash, tries + 1);
+        else MTShowMessage(top, @"MargyT crash", crash);
+    });
+}
+
+static void MTReportCrash(void) {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
+    NSString *crash = [defaults stringForKey:@"last_crash"];
+    if (!crash.length) return;
+    [defaults removeObjectForKey:@"last_crash"];
+    MTCrashAlert(crash, 0);
 }
 
 __attribute__((constructor)) static void MTStart(void) {
@@ -467,10 +495,12 @@ __attribute__((constructor)) static void MTStart(void) {
         if (![[bundle objectForInfoDictionaryKey:@"CFBundleExecutable"] isEqual:@"TikTok"] || ![bundle.bundlePath.pathExtension isEqual:@"app"]) return;
         if (![[bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqual:@"46.9.0"]) return;
         NSSetUncaughtExceptionHandler(MTCrash);
+        for (int sig : (int[]){SIGSEGV, SIGBUS, SIGABRT}) signal(sig, MTSignal);
         MTNote(@"Starting development port; on-device compatibility unverified");
         InstallRegion();
         dispatch_async(dispatch_get_main_queue(), ^{
             MTInstallHooks();
+            MTReportCrash();
             [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) { MTInstallHooks(); }];
         });
     }
