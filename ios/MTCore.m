@@ -36,6 +36,18 @@ NSArray<NSDictionary *> *MTSections(void) {
                 Row(@"feed_date_from", MTText(@"Посты не раньше", @"Posts not before"), MTText(@"Дата ГГГГ-ММ-ДД или пусто. Работает в ленте и в поиске.", @"YYYY-MM-DD or empty. Works in feed and search."), @"calendar.badge.clock", @"date", @"", nil),
                 Row(@"feed_date_to", MTText(@"Посты не позже", @"Posts not after"), MTText(@"Дата ГГГГ-ММ-ДД или пусто", @"YYYY-MM-DD or empty"), @"calendar", @"date", @"", nil)
             ]},
+            @{@"title": MTText(@"Фильтрация", @"Filtering"), @"rows": @[
+                Row(@"hide_soft_ads", MTText(@"Скрывать мягкую рекламу", @"Hide soft ads"), MTText(@"Посты с рекламными метками, формами и лендингами — включая TikTok Rewards", @"Posts with ad labels, forms and landing pages — including TikTok Rewards"), @"banknote", @"toggle", @NO, nil),
+                Row(@"hide_commission", MTText(@"Убирать видео с комиссией", @"Remove commission videos"), MTText(@"Пометки «автор получает комиссию», промо- и буст-теги", @"'Author earns commission' marks, promote and boost tags"), @"percent", @"toggle", @NO, nil),
+                Row(@"hide_sensitive", MTText(@"Убирать чувствительный контент", @"Remove sensitive content"), MTText(@"Посты с моделью риска TikTok", @"Posts carrying TikTok's risk model"), @"eye.slash", @"toggle", @NO, nil),
+                Row(@"hide_warnings", MTText(@"Убирать предупреждения", @"Remove warned posts"), MTText(@"Посты с предупреждающими модулями при шаринге", @"Posts carrying share warning modules"), @"exclamationmark.triangle", @"toggle", @NO, nil),
+                Row(@"hide_recommendations", MTText(@"Пропускать рекомендации", @"Skip recommendations"), MTText(@"Карточки рекомендуемых пользователей и друзей", @"Recommended user and friend cards"), @"person.2.slash", @"toggle", @NO, nil),
+                Row(@"hide_popups", MTText(@"Убирать опросы и стикеры", @"Remove polls and stickers"), MTText(@"Посты с интерактивными стикерами (опросы, голосования)", @"Posts with interaction stickers (polls, votes)"), @"bubble.left.and.exclamationmark.bubble.right", @"toggle", @NO, nil),
+                Row(@"hide_shop", MTText(@"Убирать TikTok Shop", @"Remove TikTok Shop"), MTText(@"Посты с коммерческими моделями и витринами", @"Posts with commerce models and product shelves"), @"bag", @"toggle", @NO, nil),
+                Row(@"hide_location_ads", MTText(@"Убирать рекламу мест", @"Remove location ads"), MTText(@"Посты с POI-ретегами и геометками", @"Posts with POI retags and geo marks"), @"mappin.slash", @"toggle", @NO, nil),
+                Row(@"hide_insert_cards", MTText(@"Убирать вставки-карточки", @"Remove inserted cards"), MTText(@"Промо-карточки в ленте, включая кино-промо", @"Inserted promo cards, including movie promos"), @"rectangle.stack.badge.minus", @"toggle", @NO, nil),
+                Row(@"hide_ai", MTText(@"Убирать видео от ИИ", @"Remove AI videos"), MTText(@"Посты с меткой AIGC или ИИ-контентом", @"Posts labelled AIGC or carrying AI content info"), @"brain", @"toggle", @NO, nil)
+            ]},
             @{@"title": MTText(@"Видео", @"Video"), @"rows": @[
                 Row(@"sound_available", MTText(@"Не заглушать доступную дорожку", @"Keep available audio unmuted"), MTText(@"Только локальное заглушение. Удалённый сервером звук не восстанавливается.", @"Local muting only. Cannot restore audio removed by the server."), @"speaker.wave.2", @"toggle", @YES, nil),
                 Row(@"seekbar_always", MTText(@"Перемотка на всех видео", @"Always show the scrubber"), @"", @"slider.horizontal.3", @"toggle", @NO, nil),

@@ -34,9 +34,14 @@ static double DateBound(NSString *text, BOOL upper) {
 NSArray *MTFilterFeed(NSArray *items) {
     if (![items isKindOfClass:NSArray.class]) return items;
     BOOL ads = MTBool(@"hide_ads"), live = MTBool(@"hide_live"), photos = MTBool(@"hide_photos");
+    BOOL softAds = MTBool(@"hide_soft_ads"), commission = MTBool(@"hide_commission");
+    BOOL sensitive = MTBool(@"hide_sensitive"), warnings = MTBool(@"hide_warnings");
+    BOOL recommends = MTBool(@"hide_recommendations"), popups = MTBool(@"hide_popups");
+    BOOL shop = MTBool(@"hide_shop"), locations = MTBool(@"hide_location_ads");
+    BOOL inserts = MTBool(@"hide_insert_cards"), ai = MTBool(@"hide_ai");
     NSArray *tags = MTBool(@"blocked_tags_on") ? MTValue(@"blocked_tags") : @[];
     double after = DateBound(MTValue(@"feed_date_from"), NO), before = DateBound(MTValue(@"feed_date_to"), YES);
-    if (!ads && !live && !photos && !tags.count && !after && !before) return items;
+    if (!ads && !live && !photos && !softAds && !commission && !sensitive && !warnings && !recommends && !popups && !shop && !locations && !inserts && !ai && !tags.count && !after && !before) return items;
     id account = MTGet(NSClassFromString(@"AWEUserService"), @"sharedService");
     NSString *uid = MTGet(account, @"userID");
     Class awemeClass = NSClassFromString(@"AWEAwemeModel");
@@ -56,6 +61,19 @@ NSArray *MTFilterFeed(NSArray *items) {
                 if (MTMatches(item, type, "q@:")) room |= ((NSInteger (*)(id, SEL))objc_msgSend)(item, type) == 101;
                 drop = (ads && BoolProperty(item, @"isAds")) || (live && room);
                 if (!room) drop |= (photos && MTGet(item, @"photoAlbum") != nil) || MTBlocksCaption(MTGet(item, @"descriptionString"), tags);
+                if (!drop && softAds) drop = BoolProperty(item, @"isSoftAds") || BoolProperty(item, @"hasAd") || BoolProperty(item, @"hasAdFormURL") || BoolProperty(item, @"hasAdLandingPage");
+                if (!drop && commission) drop = MTGet(item, @"promoteTagInfo") != nil || MTGet(item, @"boostTagInfo") != nil || MTGet(item, @"musicPromotionTag") != nil;
+                if (!drop && sensitive) drop = MTGet(item, @"riskInfoModel") != nil;
+                if (!drop && warnings) drop = MTGet(item, @"shareWarnInfoModel") != nil || MTGet(item, @"shareWarnModuleModel") != nil;
+                if (!drop && recommends) {
+                    drop = BoolProperty(item, @"isRecommendUserCard") || BoolProperty(item, @"isUserRecommendBigCard") || MTGet(item, @"relationRecommendInfo") != nil || MTGet(item, @"recommendReasonStruct") != nil;
+                    if (!drop) { id users = MTGet(item, @"feedRecommendUserList"); drop = [users isKindOfClass:NSArray.class] && [users count] > 0; }
+                }
+                if (!drop && popups) { id stickers = MTGet(item, @"interactionStickers"); drop = [stickers isKindOfClass:NSArray.class] && [stickers count] > 0; }
+                if (!drop && shop) drop = MTGet(item, @"commerceModel") != nil || MTGet(item, @"feedProductSelectionCardProductInfoModel") != nil || MTGet(item, @"activityPendant") != nil;
+                if (!drop && locations) drop = MTGet(item, @"poiRetagConfig") != nil || [MTGet(item, @"poiRetagText") isKindOfClass:NSString.class] || [MTGet(item, @"poiRetagSignal") boolValue];
+                if (!drop && inserts) drop = MTGet(item, @"card") != nil || MTGet(item, @"feed_cardInsertConfig") != nil;
+                if (!drop && ai) drop = MTGet(item, @"aigcInfoModel") != nil || MTGet(item, @"moderationAigcInfoModel") != nil || MTGet(item, @"creationAICastInfo") != nil || MTGet(item, @"creationAIPortraitInfo") != nil;
             }
         }
         if (drop && !filtered) filtered = [[items subarrayWithRange:NSMakeRange(0, index)] mutableCopy];
@@ -377,7 +395,7 @@ void MTInstallHooks(void) {
     InstallRegion();
     BOOL feed = FeedListHook(@"TTKFeedBaseResponseModel");
     feed |= FeedListHook(@"TTKSearchAwemePoolDataController");
-    for (NSString *key in @[@"hide_ads", @"hide_live", @"hide_photos", @"blocked_tags", @"blocked_tags_on", @"feed_date_from", @"feed_date_to"]) MTCapability(key, feed);
+    for (NSString *key in @[@"hide_ads", @"hide_live", @"hide_photos", @"blocked_tags", @"blocked_tags_on", @"feed_date_from", @"feed_date_to", @"hide_soft_ads", @"hide_commission", @"hide_sensitive", @"hide_warnings", @"hide_recommendations", @"hide_popups", @"hide_shop", @"hide_location_ads", @"hide_insert_cards", @"hide_ai"]) MTCapability(key, feed);
     BOOL seekbar = BoolHook(@"AWEAwemeModel", @"progressBarVisible", @"seekbar_always", YES);
     seekbar &= BoolHook(@"AWEAwemeModel", @"progressBarDraggable", @"seekbar_always", YES);
     MTCapability(@"seekbar_always", seekbar);
