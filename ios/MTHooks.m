@@ -779,6 +779,10 @@ static BOOL MTCrashLooping(void) {
     });
     if (streak >= 3) {
         MTNote([NSString stringWithFormat:@"Minimal mode after %ld consecutive crashes", (long)streak]);
+        // The crash is already in the diary; clearing the marker keeps the
+        // minimal launch from re-alerting into the same crash, and lets a
+        // surviving session reset the streak.
+        [defaults removeObjectForKey:@"last_crash"];
         return YES;
     }
     return NO;
@@ -798,7 +802,7 @@ __attribute__((constructor)) static void MTStart(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             @try { minimal ? InstallEntries() : MTInstallHooks(); }
             @catch (NSException *exception) { MTCrashRecord([NSString stringWithFormat:@"install: %@ — %@", exception.name, exception.reason ?: @"?"]); }
-            MTReportCrash();
+            if (!minimal) MTReportCrash();
             if (!minimal) [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) { MTInstallHooks(); }];
         });
     }

@@ -18,7 +18,8 @@ UIViewController *MTTopController(UIWindow *window) {
     return controller;
 }
 void MTShowMessage(UIViewController *presenter, NSString *title, NSString *message) {
-    if (!presenter || presenter.presentedViewController || !presenter.view.window) return;
+    if (!presenter || presenter.presentedViewController || !presenter.view.window
+        || presenter.isBeingPresented || presenter.isBeingDismissed || presenter.isMovingToParentViewController) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:MTText(@"Понятно", @"OK") style:UIAlertActionStyleCancel handler:nil]];
     [presenter presentViewController:alert animated:!UIAccessibilityIsReduceMotionEnabled() completion:nil];
