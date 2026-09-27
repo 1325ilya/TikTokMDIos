@@ -204,7 +204,7 @@ void MTNote(NSString *message) {
     @synchronized (state) {
         [state.log addObject:[NSString stringWithFormat:@"%@  %@", NSDate.date, message]];
         if (state.log.count > 80) [state.log removeObjectsInRange:NSMakeRange(0, state.log.count - 80)];
-        [state.defaults setObject:state.log forKey:@"diary"];
+        [state.defaults setObject:[state.log copy] forKey:@"diary"];
     }
 }
 void MTCapability(NSString *key, BOOL ready) {

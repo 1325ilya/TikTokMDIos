@@ -362,8 +362,9 @@ static void InstallEntries(void) {
     if (selected) MTHook(@"AWESettingsNormalSectionViewModel", @"viewDidLoad", NO, "v@:", ^id(IMP original) {
         return ^(id section) {
             ((void (*)(id, SEL))original)(section, @selector(viewDidLoad));
-            @try { AddSettingsRow(section); }
-            @catch (NSException *exception) { MTNote(@"Settings row unavailable; use navigation button"); }
+            void (^add)(void) = ^{ @try { AddSettingsRow(section); } @catch (NSException *exception) { MTNote(@"Settings row unavailable; use navigation button"); } };
+            if (NSThread.isMainThread) add();
+            else dispatch_async(dispatch_get_main_queue(), add);
         };
     });
     MTHook(@"TTKSettingsViewController", @"viewDidAppear:", NO, "v@:B", ^id(IMP original) {
@@ -450,11 +451,22 @@ void MTInstallHooks(void) {
     MTInstallAppearance();
 }
 
+static void MTCrash(NSException *exception) {
+    @try {
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
+        NSMutableArray *log = [[defaults stringArrayForKey:@"diary"] mutableCopy] ?: [NSMutableArray array];
+        [log addObject:[NSString stringWithFormat:@"%@  Crash: %@ — %@", NSDate.date, exception.name, exception.reason ?: @"?"]];
+        if (log.count > 80) [log removeObjectsInRange:NSMakeRange(0, log.count - 80)];
+        [defaults setObject:log forKey:@"diary"];
+    } @catch (NSException *ignored) { }
+}
+
 __attribute__((constructor)) static void MTStart(void) {
     @autoreleasepool {
         NSBundle *bundle = NSBundle.mainBundle;
         if (![[bundle objectForInfoDictionaryKey:@"CFBundleExecutable"] isEqual:@"TikTok"] || ![bundle.bundlePath.pathExtension isEqual:@"app"]) return;
         if (![[bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqual:@"46.9.0"]) return;
+        NSSetUncaughtExceptionHandler(MTCrash);
         MTNote(@"Starting development port; on-device compatibility unverified");
         InstallRegion();
         dispatch_async(dispatch_get_main_queue(), ^{
