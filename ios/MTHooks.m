@@ -443,7 +443,7 @@ static void InstallRegion(void) {
         });
         ready |= MTHook(@"TIKTOKRegionManager", @"isInRegions:", classMethod.boolValue, "B@:@", ^id(IMP original) {
             return ^BOOL(id object, id list) {
-                if (!enabled || ![list isKindOfClass:NSArray.class] && ![list isKindOfClass:NSSet.class]) return ((BOOL (*)(id, SEL, id))original)(object, NSSelectorFromString(@"isInRegions:"), list);
+                if (!enabled || (![list isKindOfClass:NSArray.class] && ![list isKindOfClass:NSSet.class])) return ((BOOL (*)(id, SEL, id))original)(object, NSSelectorFromString(@"isInRegions:"), list);
                 for (id region in list) {
                     if ([region isKindOfClass:NSString.class] && [region caseInsensitiveCompare:iso] == NSOrderedSame) return YES;
                 }
