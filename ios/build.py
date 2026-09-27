@@ -155,7 +155,7 @@ def package(ipa, library, output):
         minimum = tuple(int(part) for part in metadata.get('MinimumOSVersion', '0').split('.'))
         if minimum < (15, 0):
             metadata['MinimumOSVersion'] = '15.0'
-        metadata['MargyTPortVersion'] = '0.1.0-dev'
+        metadata['MargyTPortVersion'] = '0.2.0-dev'
         replacements = {executable: patched, info_path: plistlib.dumps(metadata, fmt=plistlib.FMT_BINARY)}
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=output.parent, suffix='.ipa.tmp', delete=False) as pending:

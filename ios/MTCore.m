@@ -1,6 +1,7 @@
 #import "MTCore.h"
 
 NSString *const MTSettingsChanged = @"cat.narezany.margyt.settingsChanged";
+NSString *const MTVersion = @"0.2.0-dev";
 
 NSString *MTText(NSString *russian, NSString *english) {
     NSString *language = NSLocale.preferredLanguages.firstObject.lowercaseString;
@@ -217,7 +218,8 @@ BOOL MTAvailable(NSString *key) {
 NSString *MTDiagnostics(void) {
     MTState *state = MTState.shared;
     @synchronized (state) {
-        return [NSString stringWithFormat:@"MargyT iOS — development port\nTikTok %@ (%@)\niOS %@\n\n%@\n\n%@",
+        return [NSString stringWithFormat:@"MargyT iOS %@\nTikTok %@ (%@)\niOS %@\n\n%@\n\n%@",
+                MTVersion,
                 [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?",
                 [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"?",
                 UIDevice.currentDevice.systemVersion,

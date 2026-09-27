@@ -154,7 +154,10 @@ static UIVisualEffect *Glass(void) {
     title.numberOfLines = 0;
     title.adjustsFontForContentSizeCategory = YES;
     UILabel *detail = [UILabel new];
-    detail.text = MTText(@"Нативный интерфейс iOS\nЭкспериментальный перенос · TikTok 46.9.0", @"Native iOS interface\nExperimental port · TikTok 46.9.0");
+    detail.text = [NSString stringWithFormat:@"%@\n%@ · TikTok %@",
+                   MTText(@"Нативный интерфейс iOS", @"Native iOS interface"),
+                   [NSString stringWithFormat:MTText(@"MargyT iOS %@ — экспериментальный перенос", @"MargyT iOS %@ — experimental port"), MTVersion],
+                   [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"46.9.0"];
     detail.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     detail.textColor = UIColor.secondaryLabelColor;
     detail.numberOfLines = 0;

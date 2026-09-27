@@ -3,6 +3,7 @@
 #import <objc/message.h>
 
 FOUNDATION_EXPORT NSString *const MTSettingsChanged;
+FOUNDATION_EXPORT NSString *const MTVersion;
 FOUNDATION_EXPORT NSString *MTText(NSString *russian, NSString *english);
 FOUNDATION_EXPORT NSArray<NSDictionary *> *MTSections(void);
 FOUNDATION_EXPORT NSArray<NSDictionary *> *MTCountries(void);
