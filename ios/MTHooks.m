@@ -17,6 +17,9 @@ static void MTTrailText(NSString *text) {
     MTTrail([NSString stringWithFormat:@"+%.1fs %@", CFAbsoluteTimeGetCurrent() - MTLaunchTime, text].UTF8String);
 }
 
+// The most recently filtered page, for the search auto-paging.
+static struct { NSUInteger kept, total; CFAbsoluteTime at; } MTLastPage;
+
 static NSString *MTUID;
 static NSString *MTCachedUID(void) {
     @synchronized (NSString.class) { return MTUID; }
@@ -202,6 +205,11 @@ NSArray *MTFilterFeed(NSArray *items) {
     }
     if (trace) MTTrailText(@"feed filter exit");
     NSArray *result = filtered ? [filtered copy] : items;
+    @synchronized (NSNull.class) {
+        MTLastPage.kept = result.count;
+        MTLastPage.total = items.count;
+        MTLastPage.at = CFAbsoluteTimeGetCurrent();
+    }
     objc_setAssociatedObject(items, &cacheKey, @[@(version), filtered ? result : NSNull.null], OBJC_ASSOCIATION_RETAIN);
     return result;
 }
@@ -661,6 +669,61 @@ static BOOL FeedListHook(NSString *className, NSString *property) {
     });
 }
 
+// ------------------------------------------------------------ auto-paging
+//
+// Search and hashtag results come a page at a time, ranked by relevance and
+// mostly recent, so a date range or an "only these tags" list can leave a
+// page nearly empty. When that happens the next page is requested again, a
+// few times, the way scrolling to the bottom would.
+
+static BOOL MTAutoMoreWanted(void) {
+    NSArray *tags = MTValue(@"blocked_tags");
+    return [MTValue(@"feed_date_from") length] || [MTValue(@"feed_date_to") length]
+        || (MTBool(@"only_tags") && [tags isKindOfClass:NSArray.class] && tags.count);
+}
+
+static BOOL MTFlag(id object, NSString *name, BOOL fallback) {
+    SEL selector = NSSelectorFromString(name);
+    return MTMatches(object, selector, "B@:") ? ((BOOL (*)(id, SEL))objc_msgSend)(object, selector) : fallback;
+}
+
+static void MTAutoMoreStep(id controller, IMP original, SEL selector, CFAbsoluteTime since, int step) {
+    if (!controller || step >= 6 || !MTAutoMoreWanted()) return;
+    NSUInteger kept, total;
+    CFAbsoluteTime at;
+    @synchronized (NSNull.class) { kept = MTLastPage.kept; total = MTLastPage.total; at = MTLastPage.at; }
+    if (at < since || !total || kept >= 4) return;
+    if (!MTFlag(controller, @"hasMore", YES)) return;
+    __weak id weak = controller;
+    if (MTFlag(controller, @"isLoadMoreRunning", NO) || MTFlag(controller, @"isLoading", NO)) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MTAutoMoreStep(weak, original, selector, since, step); });
+        return;
+    }
+    MTNote([NSString stringWithFormat:@"auto-more %d: page kept %lu of %lu, loading next (%@)", step + 1, (unsigned long)kept, (unsigned long)total, NSStringFromClass([controller class])]);
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    @try {
+        // Our own completion: TikTok's arguments to it, whatever they are, are ignored.
+        ((void (*)(id, SEL, id))original)(controller, selector, ^{});
+    } @catch (NSException *exception) {
+        MTTrailText([NSString stringWithFormat:@"auto-more threw %@ — %@", exception.name, exception.reason ?: @"?"]);
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MTAutoMoreStep(weak, original, selector, now, step + 1); });
+}
+
+static BOOL MTAutoMoreHook(NSString *className, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    return MTHook(className, name, NO, "v@:@", ^id(IMP original) {
+        return ^(id controller, id completion) {
+            CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+            ((void (*)(id, SEL, id))original)(controller, selector, completion);
+            if (!MTAutoMoreWanted()) return;
+            __weak id weak = controller;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MTAutoMoreStep(weak, original, selector, started, 0); });
+        };
+    });
+}
+
 static BOOL InstallSplash(void) {
     BOOL done = NO;
     for (NSString *selector in @[@"shouldShowAwesomeSplash", @"hasAwesomeSplash", @"isAwesomeSplashShowing"]) {
@@ -758,6 +821,10 @@ void MTInstallHooks(void) {
     for (NSString *owner in @[@"AWEAwemeResponseModel", @"TTKFeedDataResponseResult", @"TTKFeedBaseResponseModel",
                               @"TTKSearchAwemePoolDataController", @"AWEChallengeAwemeListResponse"]) feed |= FeedListHook(owner, @"awemeList");
     feed |= FeedListHook(@"TTKSearchAwemeResponse", @"awemes");
+    stage(@"auto-more");
+    for (NSString *owner in @[@"AWESearchVideoListDataViewController", @"TikTokSearchVideoListSyncDataController",
+                              @"TTKSearchAwemePoolDataController", @"TTKSearchMultiVideoInnerDataController"]) MTAutoMoreHook(owner, @"loadMoreWithCompletion:");
+    for (NSString *owner in @[@"AWEChallengeAwemeListDataController"]) MTAutoMoreHook(owner, @"loadMoreWithFilteredCompletion:");
     stage(@"splash");
     InstallSplash();
     stage(@"voice");
