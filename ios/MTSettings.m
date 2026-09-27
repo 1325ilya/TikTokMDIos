@@ -157,6 +157,8 @@ static UIVisualEffect *Glass(void) {
     title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
     title.numberOfLines = 0;
     title.adjustsFontForContentSizeCategory = YES;
+    title.userInteractionEnabled = YES;
+    [title addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(catTapped:)]];
     UILabel *detail = [UILabel new];
     detail.text = [NSString stringWithFormat:@"%@\n%@ · TikTok %@",
                    MTText(@"Нативный интерфейс iOS", @"Native iOS interface"),
@@ -234,7 +236,8 @@ static UIVisualEffect *Glass(void) {
     NSDictionary *row = rows[indexPath.row];
     NSString *key = row[@"key"], *kind = row[@"kind"];
     BOOL info = [kind isEqual:@"info"], log = [kind isEqual:@"diagnostics"];
-    BOOL available = MTAvailable(key) || info || log;
+    BOOL passive = info || log || [kind isEqual:@"action"];
+    BOOL available = MTAvailable(key) || passive;
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
     UIListContentConfiguration *content = cell.defaultContentConfiguration;
     content.text = row[@"title"];
@@ -244,6 +247,11 @@ static UIVisualEffect *Glass(void) {
     if ([kind isEqual:@"country"]) [details insertObject:MTCountry()[@"name"] atIndex:0];
     if ([kind isEqual:@"tags"]) [details insertObject:[MTValue(key) componentsJoinedByString:@", "] atIndex:0];
     if ([kind isEqual:@"date"]) [details insertObject:[MTValue(key) length] ? MTValue(key) : MTText(@"не задано", @"not set") atIndex:0];
+    if ([kind isEqual:@"account"]) {
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
+        NSString *uid = [defaults stringForKey:@"account_uid"], *sec = [defaults stringForKey:@"account_sec_uid"];
+        [details insertObject:[NSString stringWithFormat:@"uid: %@\nsec_uid: %@", uid.length ? uid : @"—", sec.length ? sec : @"—"] atIndex:0];
+    }
     if (!available) [details addObject:MTText(@"Недоступно: обработчик не найден", @"Unavailable: hook not found")];
     content.secondaryText = [details componentsJoinedByString:@"\n"];
     content.textProperties.numberOfLines = 0;
@@ -280,8 +288,22 @@ static UIVisualEffect *Glass(void) {
     if (indexPath.row >= (NSInteger)rows.count) return;
     NSDictionary *row = rows[indexPath.row];
     NSString *kind = row[@"kind"], *key = row[@"key"];
-    if ([kind isEqual:@"info"] || (!MTAvailable(key) && ![kind isEqual:@"diagnostics"])) {
+    if ([kind isEqual:@"info"] || (!MTAvailable(key) && ![kind isEqual:@"diagnostics"] && ![kind isEqual:@"action"])) {
         MTShowMessage(self, row[@"title"], row[@"detail"]);
+    } else if ([kind isEqual:@"account"]) {
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
+        NSString *uid = [defaults stringForKey:@"account_uid"], *sec = [defaults stringForKey:@"account_sec_uid"];
+        UIAlertController *sheet = [UIAlertController alertControllerWithTitle:row[@"title"] message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+        sheet.popoverPresentationController.sourceView = cell;
+        sheet.popoverPresentationController.sourceRect = cell.bounds;
+        if (uid.length) [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:MTText(@"Копировать uid: %@", @"Copy uid: %@"), uid] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { UIPasteboard.generalPasteboard.string = uid; }]];
+        if (sec.length) [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:MTText(@"Копировать sec_uid: %@", @"Copy sec_uid: %@"), sec] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { UIPasteboard.generalPasteboard.string = sec; }]];
+        if (!uid.length && !sec.length) sheet.message = MTText(@"ID ещё не прочитан — откройте ленту и вернитесь", @"The ID has not been read yet — open the feed and come back");
+        [sheet addAction:[UIAlertAction actionWithTitle:MTText(@"Отмена", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:sheet animated:YES completion:nil];
+    } else if ([kind isEqual:@"action"] && [key isEqual:@"update_check"]) {
+        [self checkUpdate];
     } else if ([kind isEqual:@"diagnostics"]) {
         [self.navigationController pushViewController:[MTLogController new] animated:!UIAccessibilityIsReduceMotionEnabled()];
     } else if ([kind isEqual:@"country"] || [kind isEqual:@"choice"]) {
@@ -332,6 +354,78 @@ static UIVisualEffect *Glass(void) {
         }]];
         [self presentViewController:alert animated:YES completion:nil];
     }
+}
+
+- (void)checkUpdate {
+    NSURL *url = [NSURL URLWithString:@"https://raw.githubusercontent.com/1325ilya/TikTokMDIos/main/VERSION"];
+    [[NSURLSession.sharedSession dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSString *latest = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        BOOL newer = latest.length && ![latest isEqual:MTVersion] && [latest compare:MTVersion options:NSNumericSearch] == NSOrderedDescending;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error || !latest.length) MTShowMessage(self, @"MargyT", MTText(@"Не удалось проверить обновление", @"Could not check for an update"));
+            else if (newer) MTShowMessage(self, @"MargyT", [NSString stringWithFormat:MTText(@"Доступна версия %@ (у вас %@). Соберите и подпишите новый IPA.", @"%@ is available (you have %@). Build and sign the new IPA."), latest, MTVersion]);
+            else MTShowMessage(self, @"MargyT", [NSString stringWithFormat:MTText(@"У вас последняя версия (%@)", @"You are on the latest version (%@)"), MTVersion]);
+        });
+    }] resume];
+}
+
+- (void)catTapped:(UITapGestureRecognizer *)tap {
+    static NSUInteger taps;
+    static CFAbsoluteTime last;
+    static NSArray *cats;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    taps = now - last > 1.0 ? 1 : taps + 1;
+    last = now;
+    UIView *title = tap.view;
+    if (!UIAccessibilityIsReduceMotionEnabled()) {
+        [UIView animateWithDuration:0.09 animations:^{ title.transform = CGAffineTransformMakeScale(1.04, 0.82); }
+                         completion:^(BOOL done) { [UIView animateWithDuration:0.16 animations:^{ title.transform = CGAffineTransformIdentity; }]; }];
+    }
+    if (taps < 5) {
+        if (!cats) [[NSURLSession.sharedSession dataTaskWithURL:[NSURL URLWithString:@"https://raw.githubusercontent.com/narezany/Margelet/main/cats.json"] completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            if (!error && data) cats = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        }] resume];
+        return;
+    }
+    taps = 0;
+    if (![cats isKindOfClass:NSArray.class] || !cats.count) { MTShowMessage(self, @"MargyT", MTText(@"Котики ещё в пути…", @"The cats are still on their way…")); return; }
+    NSDictionary *cat = cats[arc4random_uniform((uint32_t)cats.count)];
+    NSString *photo = cat[@"photo"];
+    if (![photo isKindOfClass:NSString.class] || !photo.length) return;
+    NSString *language = NSLocale.preferredLanguages.firstObject;
+    NSString *name = cat[[@"name_" stringByAppendingString:[language substringToIndex:MIN(2, language.length)]]] ?: cat[@"name"] ?: @"";
+    NSString *from = [cat[@"from"] isKindOfClass:NSString.class] ? cat[@"from"] : @"";
+    [[NSURLSession.sharedSession dataTaskWithURL:[NSURL URLWithString:[@"https://raw.githubusercontent.com/narezany/Margelet/main/" stringByAppendingString:photo]] completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        UIImage *image = data ? [UIImage imageWithData:data] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!image) return;
+            UIViewController *viewer = [UIViewController new];
+            UIImageView *picture = [[UIImageView alloc] initWithImage:image];
+            picture.contentMode = UIViewContentModeScaleAspectFit;
+            picture.translatesAutoresizingMaskIntoConstraints = NO;
+            UILabel *caption = [UILabel new];
+            caption.text = from.length ? [NSString stringWithFormat:@"%@ · %@", name, from] : name;
+            caption.textAlignment = NSTextAlignmentCenter;
+            caption.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+            caption.textColor = UIColor.secondaryLabelColor;
+            caption.numberOfLines = 0;
+            caption.translatesAutoresizingMaskIntoConstraints = NO;
+            viewer.view.backgroundColor = UIColor.systemBackgroundColor;
+            [viewer.view addSubview:picture];
+            [viewer.view addSubview:caption];
+            [NSLayoutConstraint activateConstraints:@[
+                [picture.topAnchor constraintEqualToAnchor:viewer.view.safeAreaLayoutGuide.topAnchor],
+                [picture.leadingAnchor constraintEqualToAnchor:viewer.view.leadingAnchor],
+                [picture.trailingAnchor constraintEqualToAnchor:viewer.view.trailingAnchor],
+                [caption.topAnchor constraintEqualToAnchor:picture.bottomAnchor constant:8],
+                [caption.leadingAnchor constraintEqualToAnchor:viewer.view.leadingAnchor constant:16],
+                [caption.trailingAnchor constraintEqualToAnchor:viewer.view.trailingAnchor constant:-16],
+                [caption.bottomAnchor constraintEqualToAnchor:viewer.view.safeAreaLayoutGuide.bottomAnchor constant:-8]
+            ]];
+            viewer.title = name.length ? name : @"MargyT";
+            [self.navigationController pushViewController:viewer animated:!UIAccessibilityIsReduceMotionEnabled()];
+        });
+    }] resume];
 }
 @end
 

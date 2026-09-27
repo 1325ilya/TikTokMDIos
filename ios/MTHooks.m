@@ -380,38 +380,182 @@ static void InstallEntries(void) {
     });
 }
 
+static NSSet *MTRegionSet(NSString *name) {
+    static NSDictionary<NSString *, NSSet *> *sets;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSSet *(^list)(NSArray *) = ^NSSet *(NSArray *items) { return [NSSet setWithArray:items]; };
+        sets = @{
+            @"eu": list(@[@"at", @"be", @"bg", @"hr", @"cy", @"cz", @"dk", @"ee", @"fi", @"fr", @"de", @"gr", @"hu", @"ie", @"it", @"lv", @"lt", @"lu", @"mt", @"nl", @"pl", @"pt", @"ro", @"sk", @"si", @"es", @"se"]),
+            @"eea": list(@[@"at", @"be", @"bg", @"hr", @"cy", @"cz", @"dk", @"ee", @"fi", @"fr", @"de", @"gr", @"hu", @"is", @"ie", @"it", @"lv", @"li", @"lt", @"lu", @"mt", @"nl", @"no", @"pl", @"pt", @"ro", @"sk", @"si", @"es", @"se"]),
+            @"us": list(@[@"us"])
+        };
+    });
+    return sets[name];
+}
+
 static void InstallRegion(void) {
     static NSDictionary *country;
     static BOOL enabled;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ country = MTCountry(); enabled = MTBool(@"region_enabled"); });
-    NSDictionary *carrier = @{@"isoCountryCode": country[@"iso"], @"mobileCountryCode": country[@"mcc"], @"mobileNetworkCode": country[@"mnc"], @"carrierName": country[@"carrier"]};
+    NSString *iso = country[@"iso"], *ISO = [iso uppercaseString];
+    NSString *mcc = country[@"mcc"], *mnc = country[@"mnc"];
+    NSString *mccmnc = [mcc stringByAppendingString:mnc];
     BOOL ready = NO;
+
+    // CTCarrier itself and TikTok's tspk_network_* category wrappers, which is
+    // what the app actually calls in 46.9.0.
+    NSDictionary *carrier = @{
+        @"isoCountryCode": iso, @"tspk_network_isoCountryCode": iso,
+        @"mobileCountryCode": mcc, @"tspk_network_mobileCountryCode": mcc,
+        @"mobileNetworkCode": mnc, @"tspk_network_mobileNetworkCode": mnc,
+        @"carrierName": country[@"carrier"], @"tspk_network_carrierName": country[@"carrier"]
+    };
     for (NSString *name in carrier) {
         ready |= MTHook(@"CTCarrier", name, NO, "@@:", ^id(IMP original) {
             return ^id(id object) { return enabled ? carrier[name] : ((id (*)(id, SEL))original)(object, NSSelectorFromString(name)); };
         });
     }
-    NSDictionary *regions = @{@"carrierRegion": [country[@"iso"] uppercaseString], @"systemRegion": [country[@"iso"] uppercaseString], @"mccmnc": [country[@"mcc"] stringByAppendingString:country[@"mnc"]]};
+
+    // The region TikTok reports to itself: region manager, store region reads
+    // and per-SDK helpers.
+    NSDictionary *regions = @{
+        @"carrierRegion": ISO, @"systemRegion": ISO, @"mccmnc": mccmnc,
+        @"region": ISO, @"localRegion": ISO, @"storeRegion": ISO, @"currentRegionV2": ISO
+    };
     for (NSString *name in regions) {
-        ready |= MTHook(@"TIKTOKRegionManager", name, YES, "@@:", ^id(IMP original) {
-            return ^id(id object) { return enabled ? regions[name] : ((id (*)(id, SEL))original)(object, NSSelectorFromString(name)); };
+        for (NSNumber *classMethod in @[@YES, @NO]) {
+            ready |= MTHook(@"TIKTOKRegionManager", name, classMethod.boolValue, "@@:", ^id(IMP original) {
+                return ^id(id object) { return enabled ? regions[name] : ((id (*)(id, SEL))original)(object, NSSelectorFromString(name)); };
+            });
+        }
+    }
+    // isRegion:/isInRegions: -- "is our region X?" is answered about the chosen
+    // one. The dump does not pin down whether these sit on the class or the
+    // instance, so both method tables are tried.
+    for (NSNumber *classMethod in @[@YES, @NO]) {
+        ready |= MTHook(@"TIKTOKRegionManager", @"isRegion:", classMethod.boolValue, "B@:@", ^id(IMP original) {
+            return ^BOOL(id object, id region) {
+                if (!enabled) return ((BOOL (*)(id, SEL, id))original)(object, NSSelectorFromString(@"isRegion:"), region);
+                return [region isKindOfClass:NSString.class] && [region caseInsensitiveCompare:iso] == NSOrderedSame;
+            };
+        });
+        ready |= MTHook(@"TIKTOKRegionManager", @"isInRegions:", classMethod.boolValue, "B@:@", ^id(IMP original) {
+            return ^BOOL(id object, id list) {
+                if (!enabled || ![list isKindOfClass:NSArray.class] && ![list isKindOfClass:NSSet.class]) return ((BOOL (*)(id, SEL, id))original)(object, NSSelectorFromString(@"isInRegions:"), list);
+                for (id region in list) {
+                    if ([region isKindOfClass:NSString.class] && [region caseInsensitiveCompare:iso] == NSOrderedSame) return YES;
+                }
+                return NO;
+            };
+        });
+        for (NSString *pair in @[@"isRegionInEU:eu", @"isRegionInEEA:eea", @"isRegionInUS:us"]) {
+            NSArray *parts = [pair componentsSeparatedByString:@":"];
+            NSString *selector = [parts[0] stringByAppendingString:@":"];
+            NSSet *set = MTRegionSet(parts[1]);
+            SEL sel = NSSelectorFromString(selector);
+            ready |= MTHook(@"TIKTOKRegionManager", selector, classMethod.boolValue, "B@:@", ^id(IMP original) {
+                return ^BOOL(id object, id region) {
+                    if (!enabled) return ((BOOL (*)(id, SEL, id))original)(object, sel, region);
+                    NSString *asked = [region isKindOfClass:NSString.class] ? region : iso;
+                    return [set containsObject:[asked lowercaseString]];
+                };
+            });
+        }
+    }
+
+    // Locale: the language stays, only the country code is spoofed.
+    ready |= MTHook(@"NSLocale", @"tspk_network_countryCode", NO, "@@:", ^id(IMP original) {
+        return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"tspk_network_countryCode")); };
+    });
+    ready |= MTHook(@"NSLocale", @"tspk_network_objectForKey:", NO, "@@:@", ^id(IMP original) {
+        return ^id(id object, id key) {
+            if (enabled && [key isEqual:NSLocaleCountryCode]) return ISO;
+            return ((id (*)(id, SEL, id))original)(object, NSSelectorFromString(@"tspk_network_objectForKey:"), key);
+        };
+    });
+    ready |= MTHook(@"NSLocale", @"countryCode", NO, "@@:", ^id(IMP original) {
+        return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"countryCode")); };
+    });
+
+    // MCC/MNC per-SDK readers.
+    for (NSString *pair in @[@"HMDNetworkHelper:carrierMCC:mcc", @"HMDNetworkHelper:carrierMNC:mnc",
+                             @"IESLiveDeviceInfo:carrierMCC:mcc", @"IESLiveDeviceInfo:carrierMNC:mnc",
+                             @"IESLiveDeviceInfo:carrierMCCMNC:mccmnc"]) {
+        NSArray *parts = [pair componentsSeparatedByString:@":"];
+        NSString *value = [parts[2] isEqual:@"mcc"] ? mcc : [parts[2] isEqual:@"mnc"] ? mnc : mccmnc;
+        SEL sel = NSSelectorFromString(parts[1]);
+        ready |= MTHook(parts[0], parts[1], YES, "@@:", ^id(IMP original) {
+            return ^id(id object) { return enabled ? value : ((id (*)(id, SEL))original)(object, sel); };
         });
     }
+    ready |= MTHook(@"TMMobileLoginHelper", @"mccmncString", NO, "@@:", ^id(IMP original) {
+        return ^id(id object) { return enabled ? mccmnc : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"mccmncString")); };
+    });
+    ready |= MTHook(@"ACCARFriendEffectViewModel", @"mccmnc", NO, "@@:", ^id(IMP original) {
+        return ^id(id object) { return enabled ? mccmnc : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"mccmnc")); };
+    });
+
+    // storeRegion on every class that reads it -- the App Store region is what
+    // actually steers feed content on iOS.
+    for (NSString *owner in @[@"TTKStoreRegionService", @"TTKStoreRegionModel", @"AWESecurity",
+                              @"ATSHostEnvImpl", @"ATSNetworkConsumeModel", @"IESForestRequestParameters",
+                              @"HybridContext", @"TTKLifeGuardDeviceInfo", @"TTKSADeviceInfoHelpers",
+                              @"TikTokEPRDeviceInfoHelpers", @"BDTuringConfigDelegate", @"TSPKDLCCommonSignal",
+                              @"TTLHAppBaseInfo", @"LyraxStreamOption"]) {
+        ready |= MTHook(owner, @"storeRegion", NO, "@@:", ^id(IMP original) {
+            return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"storeRegion")); };
+        });
+    }
+    for (NSString *owner in @[@"PnSPEHostServiceUtil", @"PumbaaProHostValueProvider"]) {
+        ready |= MTHook(owner, @"storeRegion", YES, "@@:", ^id(IMP original) {
+            return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"storeRegion")); };
+        });
+    }
+    for (NSString *owner in @[@"AWEPassportUtils", @"TTKPassportABTest"]) {
+        ready |= MTHook(owner, @"getStoreRegionUpperCase", YES, "@@:", ^id(IMP original) {
+            return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"getStoreRegionUpperCase")); };
+        });
+    }
+    for (NSString *owner in @[@"AWEUserService", @"GECUserService", @"GECUserServiceImpl", @"TMUserServiceImp", @"TikTokKidsUserServiceAdaptor"]) {
+        ready |= MTHook(owner, @"getStoreRegionUpperCase", NO, "@@:", ^id(IMP original) {
+            return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"getStoreRegionUpperCase")); };
+        });
+    }
+    ready |= MTHook(@"TTLHAppBaseInfo", @"carrierRegion", NO, "@@:", ^id(IMP original) {
+        return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"carrierRegion")); };
+    });
+    ready |= MTHook(@"LyraxStreamOption", @"carrierRegion", NO, "@@:", ^id(IMP original) {
+        return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"carrierRegion")); };
+    });
+
+    // currentRegion reads.
+    for (NSString *owner in @[@"ABTestCodeGen", @"AWETrackerInitManager", @"GBLRegionService",
+                              @"GBLRegionServiceImpl", @"TTEGKInfoCls", @"AWELiveMTLanguageServiceImpl"]) {
+        ready |= MTHook(owner, @"currentRegion", NO, "@@:", ^id(IMP original) {
+            return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"currentRegion")); };
+        });
+    }
+    ready |= MTHook(@"TTKABTest", @"currentRegion", YES, "@@:", ^id(IMP original) {
+        return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"currentRegion")); };
+    });
+
     MTCapability(@"region_enabled", ready);
     MTCapability(@"region_country", ready);
 }
 
-static BOOL FeedListHook(NSString *className) {
-    SEL get = NSSelectorFromString(@"awemeList"), set = NSSelectorFromString(@"setAwemeList:");
-    BOOL done = MTHook(className, @"awemeList", NO, "@@:", ^id(IMP original) {
+static BOOL FeedListHook(NSString *className, NSString *property) {
+    NSString *setter = [@"set" stringByAppendingString:[property stringByReplacingCharactersInRange:NSMakeRange(0, 1) withString:[[property substringToIndex:1] uppercaseString]]];
+    SEL get = NSSelectorFromString(property), set = NSSelectorFromString([setter stringByAppendingString:@":"]);
+    BOOL done = MTHook(className, property, NO, "@@:", ^id(IMP original) {
         return ^id(id object) {
             id items = ((id (*)(id, SEL))original)(object, get);
             @try { return MTFilterFeed(items); }
             @catch (NSException *exception) { return items; }
         };
     });
-    done |= MTHook(className, @"setAwemeList:", NO, "v@:@", ^id(IMP original) {
+    done |= MTHook(className, [setter stringByAppendingString:@":"], NO, "v@:@", ^id(IMP original) {
         return ^(id object, NSArray *items) {
             @try { items = MTFilterFeed(items); }
             @catch (NSException *exception) { }
@@ -421,11 +565,133 @@ static BOOL FeedListHook(NSString *className) {
     return done;
 }
 
+static BOOL InstallSplash(void) {
+    BOOL done = NO;
+    for (NSString *selector in @[@"shouldShowAwesomeSplash", @"hasAwesomeSplash", @"isAwesomeSplashShowing"]) {
+        SEL sel = NSSelectorFromString(selector);
+        done |= MTHook(@"AWEAwesomeSplashManager", selector, NO, "B@:", ^id(IMP original) {
+            return ^BOOL(id object) { return MTBool(@"hide_ads") ? NO : ((BOOL (*)(id, SEL))original)(object, sel); };
+        });
+    }
+    done |= MTHook(@"AWEAwesomeSplashManager", @"canShowSplashWithTabType:", NO, "B@:q", ^id(IMP original) {
+        return ^BOOL(id object, NSInteger tab) { return MTBool(@"hide_ads") ? NO : ((BOOL (*)(id, SEL, NSInteger))original)(object, NSSelectorFromString(@"canShowSplashWithTabType:"), tab); };
+    });
+    for (NSString *selector in @[@"showAwesomeSplash", @"prepareForAwesomeSplash"]) {
+        SEL sel = NSSelectorFromString(selector);
+        done |= MTHook(@"AWEAwesomeSplashManager", selector, NO, "v@:", ^id(IMP original) {
+            return ^(id object) { if (!MTBool(@"hide_ads")) ((void (*)(id, SEL))original)(object, sel); };
+        });
+    }
+    done |= MTHook(@"TTKSplashSDKi18NAdapter", @"isAwesomeSplashShowing", NO, "B@:", ^id(IMP original) {
+        return ^BOOL(id object) { return MTBool(@"hide_ads") ? NO : ((BOOL (*)(id, SEL))original)(object, NSSelectorFromString(@"isAwesomeSplashShowing")); };
+    });
+    return done;
+}
+
+static BOOL InstallVoiceComments(void) {
+    BOOL done = BoolHook(@"ABTestCodeGen", @"audioCommentPublish", @"voice_comments", YES);
+    done |= BoolHook(@"TikTokCommentImplGeneratedABTestKeys", @"audioCommentPublish", @"voice_comments", YES);
+    BOOL forbid = NO;
+    for (NSString *owner in @[@"ABTestCodeGen", @"TikTokCommentImplGeneratedABTestKeys"]) {
+        SEL sel = NSSelectorFromString(@"audioCommentPublishEntryForbidden");
+        forbid |= MTHook(owner, @"audioCommentPublishEntryForbidden", NO, "B@:", ^id(IMP original) {
+            return ^BOOL(id object) { return MTBool(@"voice_comments") ? NO : ((BOOL (*)(id, SEL))original)(object, sel); };
+        });
+    }
+    done |= forbid;
+    SEL sel = NSSelectorFromString(@"audioCommentPublish");
+    done |= MTHook(@"TTKABTest", @"audioCommentPublish", YES, "B@:", ^id(IMP original) {
+        return ^BOOL(id object) { return MTBool(@"voice_comments") ? YES : ((BOOL (*)(id, SEL))original)(object, sel); };
+    });
+    return done;
+}
+
+static void MTAccountRemember(id service) {
+    @try {
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
+        NSString *uid = MTGet(service, @"userID");
+        if ([uid isKindOfClass:NSString.class] && uid.length) [defaults setObject:uid forKey:@"account_uid"];
+        NSString *sec = MTGet(MTGet(service, @"currentUserBasicModel"), @"secUserID");
+        if ([sec isKindOfClass:NSString.class] && sec.length) [defaults setObject:sec forKey:@"account_sec_uid"];
+    } @catch (NSException *ignored) { }
+}
+
+static BOOL InstallAccount(void) {
+    SEL sel = NSSelectorFromString(@"userID");
+    BOOL done = MTHook(@"AWEUserService", @"userID", NO, "@@:", ^id(IMP original) {
+        return ^id(id object) {
+            id uid = ((id (*)(id, SEL))original)(object, sel);
+            static dispatch_once_t once;
+            dispatch_once(&once, ^{ MTAccountRemember(object); });
+            return uid;
+        };
+    });
+    if (!done) {
+        id service = MTGet(NSClassFromString(@"AWEUserService"), @"sharedService");
+        if (service) MTAccountRemember(service);
+    }
+    return done || MTGet(NSClassFromString(@"AWEUserService"), @"sharedService") != nil;
+}
+
+@interface MTLagWatch : NSObject
+@property (nonatomic, assign) CFTimeInterval previous;
+@property (nonatomic, assign) NSUInteger reported;
+- (void)tick:(CADisplayLink *)link;
+@end
+@implementation MTLagWatch
+- (void)tick:(CADisplayLink *)link {
+    CFTimeInterval now = link.timestamp;
+    if (self.previous > 0 && self.reported < 10) {
+        CFTimeInterval gap = now - self.previous - link.duration;
+        if (gap > 0.7) {
+            self.reported++;
+            MTNote([NSString stringWithFormat:@"lag: main thread stalled %.0f ms", gap * 1000]);
+        }
+    }
+    self.previous = now;
+}
+@end
+
 void MTInstallHooks(void) {
     InstallEntries();
     InstallRegion();
-    BOOL feed = FeedListHook(@"TTKFeedBaseResponseModel");
-    feed |= FeedListHook(@"TTKSearchAwemePoolDataController");
+    MTCapability(@"account_id", InstallAccount());
+    static MTLagWatch *lagWatch;
+    if (!lagWatch) {
+        lagWatch = [MTLagWatch new];
+        CADisplayLink *timer = [CADisplayLink displayLinkWithTarget:lagWatch selector:@selector(tick:)];
+        [timer addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    }
+    BOOL feed = NO;
+    for (NSString *owner in @[
+        @"TTKFeedBaseResponseModel", @"TTKFeedDataResponseResult",
+        @"AWEAwemeResponseModel", @"AWEFreshAwemeResponseModel", @"AWEAwemeMultiResponseModel",
+        @"AWEChallengeAwemeListResponse", @"AWEDiscoverCategoryModel", @"AWEDynamicPatchModel",
+        @"AWEExtensionAwemeResponseModel", @"AWEFavoriteAwemeListResponseModel",
+        @"AWEMusicAwemeListResponse", @"AWEMusicSquareResponse", @"AWEMusicGroupModel",
+        @"AWEMvAwemeResponse", @"AWEStickerAwemeResponse", @"AWEStickerAwemeListDataController",
+        @"AWETemplateAwemeResponse", @"AWEUniversalCreationAwemeResponse", @"AWEAggregatedListModel",
+        @"ACCFeedbackPostAwemeListResponse",
+        @"TTKAIMEAwemeListDataController", @"TTKAIMEDetailVideosResponseModel",
+        @"TTKAIPortraitAwemeListResponse", @"TTKCommerceCandidateResponseModel",
+        @"TTKCreditFavoriteAwemeListResponse", @"TTKCreditLikedAwemeListResponse",
+        @"TTKCreditMusicAwemeListResponse", @"TTKCreditPostAwemeListResponse",
+        @"TTKEffectDiscoveryDataController", @"TTKEffectResponse", @"TTKFavoriteAwemeListResponseModel",
+        @"TTKLSInnerFeedSourceListResponse", @"TTKLandscapeRecommendFeedResponseModel",
+        @"TTKMusicFanSpotlightVideoResponseModel", @"TTKMusicFeaturedVideoLibraryDataController",
+        @"TTKMusicFeaturedVideoResponseModel", @"TTKMusicTrendingHashtagVideosResponse",
+        @"TTKMusicDetailAIRemixInfo", @"TTKNearbyModel",
+        @"TTKOriginalSoundTrackFanSpotlightSectionModel", @"TTKPMTFanSpotlightResponse",
+        @"TTKSearchAwemePoolDataController",
+        @"TTKStoryArchiveAwemeListResponseModel", @"TTKStoryDetailEntranceResponseModel",
+        @"TTKTopicAwemeListResponse", @"TikTokNearbyFeedResponseModel",
+        @"BDXBridgeSyncDataWithInnerFeedMethodParamModel", @"BDXBridgeSyncDataWithDramaFeedMethodParamModel",
+        @"BDXBridgeTtlsOpenInnerFeedVideoMethodParamModel"
+    ]) feed |= FeedListHook(owner, @"awemeList");
+    for (NSString *owner in @[@"TTKFriendsFeedResponseModel", @"TTKRepostFeedResponseModel", @"TTKFeedUnseenVideosModel"]) feed |= FeedListHook(owner, @"items");
+    InstallSplash();
+    MTCapability(@"voice_comments", InstallVoiceComments());
+    MTCapability(@"update_check", YES);
     for (NSString *key in @[@"hide_ads", @"hide_live", @"hide_photos", @"blocked_tags", @"blocked_tags_on", @"only_tags", @"feed_date_from", @"feed_date_to", @"hide_soft_ads", @"hide_commission", @"hide_sensitive", @"hide_warnings", @"hide_recommendations", @"hide_popups", @"hide_shop", @"hide_location_ads", @"hide_insert_cards", @"hide_ai"]) MTCapability(key, feed);
     BOOL seekbar = BoolHook(@"AWEAwemeModel", @"progressBarVisible", @"seekbar_always", YES);
     seekbar &= BoolHook(@"AWEAwemeModel", @"progressBarDraggable", @"seekbar_always", YES);
@@ -446,6 +712,10 @@ void MTInstallHooks(void) {
     BOOL save = BoolHook(@"AWEAwemeModel", @"preventDownload", @"download_always", NO);
     BoolHook(@"AWEAwemeModel", @"disableDownload", @"download_always", NO);
     BoolHook(@"AWEUserModel", @"preventDownload", @"download_always", NO);
+    save |= BoolHook(@"VideoControl", @"allowDownload", @"download_always", YES);
+    save |= BoolHook(@"VideoControlV", @"allowDownload", @"download_always", YES);
+    save |= BoolHook(@"AWELongVideoControlModel", @"allowDownload", @"download_always", YES);
+    save |= BoolHook(@"AWECommerceCardStruct", @"disableDownload", @"download_always", NO);
     MTCapability(@"download_always", save);
     MTCapability(@"no_hdr", BoolHook(@"AWEAwemeModel", @"enableHDR", @"no_hdr", NO));
     MTInstallAppearance();
