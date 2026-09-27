@@ -250,6 +250,13 @@ static UIVisualEffect *Glass(void) {
     if ([kind isEqual:@"account"]) {
         NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
         NSString *uid = [defaults stringForKey:@"account_uid"], *sec = [defaults stringForKey:@"account_sec_uid"];
+        if (!uid.length) {
+            id service = MTGet(NSClassFromString(@"AWEUserService"), @"sharedService");
+            uid = MTGet(service, @"userID");
+            sec = MTGet(MTGet(service, @"currentUserBasicModel"), @"secUserID");
+            if ([uid isKindOfClass:NSString.class] && uid.length) [defaults setObject:uid forKey:@"account_uid"];
+            if ([sec isKindOfClass:NSString.class] && sec.length) [defaults setObject:sec forKey:@"account_sec_uid"];
+        }
         [details insertObject:[NSString stringWithFormat:@"uid: %@\nsec_uid: %@", uid.length ? uid : @"—", sec.length ? sec : @"—"] atIndex:0];
     }
     if (!available) [details addObject:MTText(@"Недоступно: обработчик не найден", @"Unavailable: hook not found")];

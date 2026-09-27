@@ -621,16 +621,18 @@ static BOOL InstallAccount(void) {
     BOOL done = MTHook(@"AWEUserService", @"userID", NO, "@@:", ^id(IMP original) {
         return ^id(id object) {
             id uid = ((id (*)(id, SEL))original)(object, sel);
-            static dispatch_once_t once;
-            dispatch_once(&once, ^{ MTAccountRemember(object); });
+            // Reading the account inside the hooked call deadlocks when userID
+            // is invoked reentrantly during service init, so the snapshot is
+            // deferred to the main queue instead.
+            static BOOL asked;
+            if (!asked) {
+                asked = YES;
+                dispatch_async(dispatch_get_main_queue(), ^{ MTAccountRemember(object); });
+            }
             return uid;
         };
     });
-    if (!done) {
-        id service = MTGet(NSClassFromString(@"AWEUserService"), @"sharedService");
-        if (service) MTAccountRemember(service);
-    }
-    return done || MTGet(NSClassFromString(@"AWEUserService"), @"sharedService") != nil;
+    return done;
 }
 
 @interface MTLagWatch : NSObject
@@ -737,6 +739,9 @@ static void MTCrash(NSException *exception) {
 }
 
 static void MTSignal(int sig) {
+    static volatile sig_atomic_t handling;
+    if (handling) { signal(sig, SIG_DFL); raise(sig); return; }
+    handling = 1;
     const char *name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGBUS ? "SIGBUS" : sig == SIGABRT ? "SIGABRT" : "SIGTRAP";
     MTCrashRecord([NSString stringWithFormat:@"%s in %s", name, [NSThread.callStackSymbols[2] UTF8String] ?: "?"]);
     signal(sig, SIG_DFL);
@@ -759,6 +764,26 @@ static void MTReportCrash(void) {
     MTCrashAlert(crash, 0);
 }
 
+static BOOL MTCrashLooping(void) {
+    // Three unhandled exits in a row puts the next launch into a minimal mode:
+    // only the settings entry and the crash reporter load, so a bad hook can
+    // never keep the app from opening.
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
+    // A crash marker left by last session means this launch follows a real
+    // crash; a clean start just resets the streak.
+    BOOL crashed = [defaults stringForKey:@"last_crash"].length > 0;
+    NSInteger streak = crashed ? [defaults integerForKey:@"crash_streak"] + 1 : 0;
+    [defaults setInteger:streak forKey:@"crash_streak"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(90 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"] setInteger:0 forKey:@"crash_streak"];
+    });
+    if (streak >= 3) {
+        MTNote([NSString stringWithFormat:@"Minimal mode after %ld consecutive crashes", (long)streak]);
+        return YES;
+    }
+    return NO;
+}
+
 __attribute__((constructor)) static void MTStart(void) {
     @autoreleasepool {
         NSBundle *bundle = NSBundle.mainBundle;
@@ -768,11 +793,13 @@ __attribute__((constructor)) static void MTStart(void) {
         const int sigs[] = {SIGSEGV, SIGBUS, SIGABRT};
         for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) signal(sigs[i], MTSignal);
         MTNote(@"Starting development port; on-device compatibility unverified");
-        InstallRegion();
+        BOOL minimal = MTCrashLooping();
+        if (!minimal) InstallRegion();
         dispatch_async(dispatch_get_main_queue(), ^{
-            MTInstallHooks();
+            @try { minimal ? InstallEntries() : MTInstallHooks(); }
+            @catch (NSException *exception) { MTCrashRecord([NSString stringWithFormat:@"install: %@ — %@", exception.name, exception.reason ?: @"?"]); }
             MTReportCrash();
-            [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) { MTInstallHooks(); }];
+            if (!minimal) [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) { MTInstallHooks(); }];
         });
     }
 }
