@@ -82,6 +82,26 @@ BOOL MTBlocksCaption(NSString *caption, NSArray<NSString *> *tags) {
     return NO;
 }
 
+// Hashtags live in three places: the caption text, the attached challenges
+// and the caption's text extras. Any of them counts.
+static BOOL MTItemTagged(id item, NSArray<NSString *> *tags) {
+    if (!tags.count) return NO;
+    if (MTBlocksCaption(MTGet(item, @"descriptionString"), tags)) return YES;
+    NSLocale *posix = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    NSArray *sources = @[@[@"challengeList", @"challengeName"], @[@"textExtras", @"hashtagName"]];
+    for (NSArray *source in sources) {
+        id list = MTGet(item, source[0]);
+        if (![list isKindOfClass:NSArray.class]) continue;
+        for (id entry in list) {
+            NSString *name = MTGet(entry, source[1]);
+            if (![name isKindOfClass:NSString.class] || !name.length) continue;
+            while ([name hasPrefix:@"#"]) name = [name substringFromIndex:1];
+            if ([tags containsObject:[name lowercaseStringWithLocale:posix]]) return YES;
+        }
+    }
+    return NO;
+}
+
 static double DateBound(NSString *text, BOOL upper) {
     if (![text isKindOfClass:NSString.class] || !text.length) return 0;
     static NSDateFormatter *formatter;
@@ -107,7 +127,9 @@ NSArray *MTFilterFeed(NSArray *items) {
     NSArray *allTags = MTValue(@"blocked_tags");
     if (![allTags isKindOfClass:NSArray.class]) allTags = @[];
     BOOL only = MTBool(@"only_tags") && allTags.count;
-    NSArray *tags = MTBool(@"blocked_tags_on") ? allTags : @[];
+    // One list, two meanings: in "only these" mode it is a whitelist, so it
+    // cannot also hide the very posts it keeps.
+    NSArray *tags = MTBool(@"blocked_tags_on") && !only ? allTags : @[];
     double after = DateBound(MTValue(@"feed_date_from"), NO), before = DateBound(MTValue(@"feed_date_to"), YES);
     if (!ads && !live && !photos && !softAds && !commission && !sensitive && !warnings && !recommends && !popups && !shop && !locations && !inserts && !ai && !tags.count && !only && !after && !before) return items;
     static volatile int32_t entered;
@@ -133,7 +155,7 @@ NSArray *MTFilterFeed(NSArray *items) {
                 BOOL room = ([liveID isKindOfClass:NSNumber.class] && [liveID longLongValue] != 0) || MTGet(item, @"room") != nil || MTGet(item, @"streamUrlModel") != nil || BoolProperty(item, @"isLive");
                 NSInteger awemeType = (NSInteger)LongProperty(item, @"awemeType");
                 room |= awemeType == 101;
-                BOOL tagged = MTBlocksCaption(MTGet(item, @"descriptionString"), allTags);
+                BOOL tagged = MTItemTagged(item, allTags);
                 if (ads && (BoolProperty(item, @"isAds") || BoolProperty(item, @"isAdsOrPseudoAds") || awemeType == 104 || awemeType == 105)) reason = @"ads";
                 else if (live && room) reason = @"live";
                 else if (only && !tagged) reason = @"only-tag";
@@ -721,8 +743,12 @@ void MTInstallHooks(void) {
     }
     stage(@"feed");
     BOOL feed = NO;
-    // The main feed, search results and hashtag pages.
-    for (NSString *owner in @[@"TTKFeedBaseResponseModel", @"TTKSearchAwemePoolDataController", @"AWEChallengeAwemeListResponse"]) feed |= FeedListHook(owner, @"awemeList");
+    // For You (AWEAwemeResponseModel, handed to the feed service as
+    // TTKFeedDataResponseResult), the other feed tabs, search videos and
+    // hashtag pages. Getters only.
+    for (NSString *owner in @[@"AWEAwemeResponseModel", @"TTKFeedDataResponseResult", @"TTKFeedBaseResponseModel",
+                              @"TTKSearchAwemePoolDataController", @"AWEChallengeAwemeListResponse"]) feed |= FeedListHook(owner, @"awemeList");
+    feed |= FeedListHook(@"TTKSearchAwemeResponse", @"awemes");
     stage(@"splash");
     InstallSplash();
     stage(@"voice");
