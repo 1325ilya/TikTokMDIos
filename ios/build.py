@@ -206,7 +206,7 @@ def compile_library(sdk, clang, linker, build_dir):
                         '-c', str(ROOT / 'ios' / name), '-o', str(obj)], check=True)
         objects.append(str(obj))
     library = build_dir / 'MargyT.dylib'
-    frameworks = [arg for name in ('Foundation', 'UIKit', 'QuartzCore', 'CoreTelephony') for arg in ('-framework', name)]
+    frameworks = [arg for name in ('Foundation', 'UIKit', 'QuartzCore', 'CoreGraphics', 'CoreTelephony') for arg in ('-framework', name)]
     if linker:
         subprocess.run([str(linker), '-flavor', 'darwin', '-arch', 'arm64', '-platform_version', 'ios', '15.0', '16.5',
                         '-dylib', '-install_name', '@rpath/MargyT.dylib', '-syslibroot', str(sdk),
