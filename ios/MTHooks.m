@@ -51,44 +51,50 @@ NSArray *MTFilterFeed(NSArray *items) {
     NSString *uid = MTGet(account, @"userID");
     Class awemeClass = NSClassFromString(@"AWEAwemeModel");
     NSMutableArray *filtered;
+    NSMutableDictionary<NSString *, NSNumber *> *reasons;
     NSUInteger index = 0;
     for (id item in items) {
-        BOOL drop = NO;
+        NSString *reason = nil;
         if ([item isKindOfClass:awemeClass]) {
             NSString *author = MTGet(MTGet(item, @"author"), @"userID");
             BOOL mine = [uid isKindOfClass:NSString.class] && uid.length && [uid isEqual:author];
             NSNumber *created = MTGet(item, @"createTime");
-            if ([created isKindOfClass:NSNumber.class] && ((after && created.doubleValue < after) || (before && created.doubleValue > before))) drop = YES;
-            if (!mine && !drop) {
+            if ([created isKindOfClass:NSNumber.class] && ((after && created.doubleValue < after) || (before && created.doubleValue > before))) reason = @"date";
+            if (!mine && !reason) {
                 id liveID = MTGet(item, @"liveId");
                 BOOL room = ([liveID isKindOfClass:NSNumber.class] && [liveID longLongValue] != 0) || MTGet(item, @"room") != nil || MTGet(item, @"streamUrlModel") != nil || BoolProperty(item, @"isLive");
                 NSInteger awemeType = (NSInteger)LongProperty(item, @"awemeType");
                 room |= awemeType == 101;
-                drop = (ads && (BoolProperty(item, @"isAds") || BoolProperty(item, @"isAdsOrPseudoAds") || awemeType == 104 || awemeType == 105)) || (live && room);
-                if (!room) drop |= (photos && (MTGet(item, @"photoAlbum") != nil || BoolProperty(item, @"isPhotoMode"))) || MTBlocksCaption(MTGet(item, @"descriptionString"), tags);
-                if (!drop && softAds) drop = BoolProperty(item, @"isSoftAds") || BoolProperty(item, @"hasAd") || BoolProperty(item, @"hasAdFormURL") || BoolProperty(item, @"hasAdLandingPage");
-                if (!drop && commission) drop = MTGet(item, @"promoteTagInfo") != nil || MTGet(item, @"boostTagInfo") != nil || MTGet(item, @"musicPromotionTag") != nil;
-                if (!drop && sensitive) drop = MTGet(item, @"riskInfoModel") != nil;
-                if (!drop && warnings) drop = MTGet(item, @"shareWarnInfoModel") != nil || MTGet(item, @"shareWarnModuleModel") != nil;
-                if (!drop && recommends) {
-                    drop = BoolProperty(item, @"isRecommendUserCard") || BoolProperty(item, @"isUserRecommendBigCard") || MTGet(item, @"relationRecommendInfo") != nil || MTGet(item, @"recommendReasonStruct") != nil;
-                    if (!drop) { id users = MTGet(item, @"feedRecommendUserList"); drop = [users isKindOfClass:NSArray.class] && [users count] > 0; }
-                }
-                if (!drop && popups) { id stickers = MTGet(item, @"interactionStickers"); drop = [stickers isKindOfClass:NSArray.class] && [stickers count] > 0; }
-                if (!drop && shop) drop = BoolProperty(item, @"isCommerce") || MTGet(item, @"commerceModel") != nil || MTGet(item, @"feedProductSelectionCardProductInfoModel") != nil || MTGet(item, @"activityPendant") != nil;
-                if (!drop && locations) drop = MTGet(item, @"localServiceInfo") != nil || MTGet(item, @"poiRetagConfig") != nil || [MTGet(item, @"poiRetagText") isKindOfClass:NSString.class] || [MTGet(item, @"poiRetagSignal") boolValue];
-                if (!drop && inserts) drop = MTGet(item, @"card") != nil || MTGet(item, @"feed_cardInsertConfig") != nil;
-                if (!drop && ai) {
+                if (ads && (BoolProperty(item, @"isAds") || BoolProperty(item, @"isAdsOrPseudoAds") || awemeType == 104 || awemeType == 105)) reason = @"ads";
+                else if (live && room) reason = @"live";
+                else if (!room && photos && (MTGet(item, @"photoAlbum") != nil || BoolProperty(item, @"isPhotoMode"))) reason = @"photos";
+                else if (!room && MTBlocksCaption(MTGet(item, @"descriptionString"), tags)) reason = @"tag";
+                else if (softAds && (BoolProperty(item, @"isSoftAds") || BoolProperty(item, @"hasAd") || BoolProperty(item, @"hasAdFormURL") || BoolProperty(item, @"hasAdLandingPage"))) reason = @"soft-ads";
+                else if (commission && (MTGet(item, @"promoteTagInfo") != nil || MTGet(item, @"boostTagInfo") != nil || MTGet(item, @"musicPromotionTag") != nil)) reason = @"commission";
+                else if (sensitive && MTGet(item, @"riskInfoModel") != nil) reason = @"sensitive";
+                else if (warnings && (MTGet(item, @"shareWarnInfoModel") != nil || MTGet(item, @"shareWarnModuleModel") != nil)) reason = @"warnings";
+                else if (recommends && (BoolProperty(item, @"isRecommendUserCard") || BoolProperty(item, @"isUserRecommendBigCard") || MTGet(item, @"relationRecommendInfo") != nil || MTGet(item, @"recommendReasonStruct") != nil || [MTGet(item, @"feedRecommendUserList") count])) reason = @"recommend";
+                else if (popups && [MTGet(item, @"interactionStickers") count]) reason = @"popups";
+                else if (shop && (BoolProperty(item, @"isCommerce") || MTGet(item, @"commerceModel") != nil || MTGet(item, @"feedProductSelectionCardProductInfoModel") != nil || MTGet(item, @"activityPendant") != nil)) reason = @"shop";
+                else if (locations && (MTGet(item, @"localServiceInfo") != nil || MTGet(item, @"poiRetagConfig") != nil || [MTGet(item, @"poiRetagText") isKindOfClass:NSString.class] || [MTGet(item, @"poiRetagSignal") boolValue])) reason = @"location";
+                else if (inserts && (MTGet(item, @"card") != nil || MTGet(item, @"feed_cardInsertConfig") != nil)) reason = @"insert";
+                else if (ai) {
                     id aigc = MTGet(item, @"aigcInfoModel");
-                    drop = (aigc && (BoolProperty(aigc, @"createByAI") || LongProperty(aigc, @"aigcLabelType") != 0)) || MTGet(item, @"moderationAigcInfoModel") != nil || MTGet(item, @"creationAICastInfo") != nil || MTGet(item, @"creationAIPortraitInfo") != nil;
+                    if ((aigc && (BoolProperty(aigc, @"createByAI") || LongProperty(aigc, @"aigcLabelType") != 0)) || MTGet(item, @"moderationAigcInfoModel") != nil || MTGet(item, @"creationAICastInfo") != nil || MTGet(item, @"creationAIPortraitInfo") != nil) reason = @"ai";
                 }
             }
         }
-        if (drop && !filtered) filtered = [[items subarrayWithRange:NSMakeRange(0, index)] mutableCopy];
-        if (!drop && filtered) [filtered addObject:item];
+        if (reason) {
+            if (!filtered) { filtered = [[items subarrayWithRange:NSMakeRange(0, index)] mutableCopy]; reasons = [NSMutableDictionary dictionary]; }
+            reasons[reason] = @(reasons[reason].unsignedIntegerValue + 1);
+        } else if (filtered) [filtered addObject:item];
         index++;
     }
-    if (filtered) MTNote([NSString stringWithFormat:@"feed: hidden %lu of %lu", (unsigned long)(items.count - filtered.count), (unsigned long)items.count]);
+    if (filtered) {
+        NSMutableArray *parts = [NSMutableArray array];
+        for (NSString *key in [reasons.allKeys sortedArrayUsingSelector:@selector(compare:)]) [parts addObject:[NSString stringWithFormat:@"%@:%@", key, reasons[key]]];
+        MTNote([NSString stringWithFormat:@"feed: hidden %lu of %lu (%@)", (unsigned long)(items.count - filtered.count), (unsigned long)items.count, [parts componentsJoinedByString:@", "]]);
+    }
     return filtered ?: items;
 }
 
