@@ -44,9 +44,12 @@ NSArray *MTFilterFeed(NSArray *items) {
     BOOL recommends = MTBool(@"hide_recommendations"), popups = MTBool(@"hide_popups");
     BOOL shop = MTBool(@"hide_shop"), locations = MTBool(@"hide_location_ads");
     BOOL inserts = MTBool(@"hide_insert_cards"), ai = MTBool(@"hide_ai");
-    NSArray *tags = MTBool(@"blocked_tags_on") ? MTValue(@"blocked_tags") : @[];
+    NSArray *allTags = MTValue(@"blocked_tags");
+    if (![allTags isKindOfClass:NSArray.class]) allTags = @[];
+    BOOL only = MTBool(@"only_tags") && allTags.count;
+    NSArray *tags = MTBool(@"blocked_tags_on") ? allTags : @[];
     double after = DateBound(MTValue(@"feed_date_from"), NO), before = DateBound(MTValue(@"feed_date_to"), YES);
-    if (!ads && !live && !photos && !softAds && !commission && !sensitive && !warnings && !recommends && !popups && !shop && !locations && !inserts && !ai && !tags.count && !after && !before) return items;
+    if (!ads && !live && !photos && !softAds && !commission && !sensitive && !warnings && !recommends && !popups && !shop && !locations && !inserts && !ai && !tags.count && !only && !after && !before) return items;
     id account = MTGet(NSClassFromString(@"AWEUserService"), @"sharedService");
     NSString *uid = MTGet(account, @"userID");
     Class awemeClass = NSClassFromString(@"AWEAwemeModel");
@@ -65,10 +68,12 @@ NSArray *MTFilterFeed(NSArray *items) {
                 BOOL room = ([liveID isKindOfClass:NSNumber.class] && [liveID longLongValue] != 0) || MTGet(item, @"room") != nil || MTGet(item, @"streamUrlModel") != nil || BoolProperty(item, @"isLive");
                 NSInteger awemeType = (NSInteger)LongProperty(item, @"awemeType");
                 room |= awemeType == 101;
+                BOOL tagged = MTBlocksCaption(MTGet(item, @"descriptionString"), allTags);
                 if (ads && (BoolProperty(item, @"isAds") || BoolProperty(item, @"isAdsOrPseudoAds") || awemeType == 104 || awemeType == 105)) reason = @"ads";
                 else if (live && room) reason = @"live";
+                else if (only && !tagged) reason = @"only-tag";
                 else if (!room && photos && (MTGet(item, @"photoAlbum") != nil || BoolProperty(item, @"isPhotoMode"))) reason = @"photos";
-                else if (!room && MTBlocksCaption(MTGet(item, @"descriptionString"), tags)) reason = @"tag";
+                else if (!room && tagged && tags.count) reason = @"tag";
                 else if (softAds && (BoolProperty(item, @"isSoftAds") || BoolProperty(item, @"hasAd") || BoolProperty(item, @"hasAdFormURL") || BoolProperty(item, @"hasAdLandingPage"))) reason = @"soft-ads";
                 else if (commission && (MTGet(item, @"promoteTagInfo") != nil || MTGet(item, @"boostTagInfo") != nil || MTGet(item, @"musicPromotionTag") != nil)) reason = @"commission";
                 else if (sensitive && MTGet(item, @"riskInfoModel") != nil) reason = @"sensitive";
@@ -420,7 +425,7 @@ void MTInstallHooks(void) {
     InstallRegion();
     BOOL feed = FeedListHook(@"TTKFeedBaseResponseModel");
     feed |= FeedListHook(@"TTKSearchAwemePoolDataController");
-    for (NSString *key in @[@"hide_ads", @"hide_live", @"hide_photos", @"blocked_tags", @"blocked_tags_on", @"feed_date_from", @"feed_date_to", @"hide_soft_ads", @"hide_commission", @"hide_sensitive", @"hide_warnings", @"hide_recommendations", @"hide_popups", @"hide_shop", @"hide_location_ads", @"hide_insert_cards", @"hide_ai"]) MTCapability(key, feed);
+    for (NSString *key in @[@"hide_ads", @"hide_live", @"hide_photos", @"blocked_tags", @"blocked_tags_on", @"only_tags", @"feed_date_from", @"feed_date_to", @"hide_soft_ads", @"hide_commission", @"hide_sensitive", @"hide_warnings", @"hide_recommendations", @"hide_popups", @"hide_shop", @"hide_location_ads", @"hide_insert_cards", @"hide_ai"]) MTCapability(key, feed);
     BOOL seekbar = BoolHook(@"AWEAwemeModel", @"progressBarVisible", @"seekbar_always", YES);
     seekbar &= BoolHook(@"AWEAwemeModel", @"progressBarDraggable", @"seekbar_always", YES);
     MTCapability(@"seekbar_always", seekbar);

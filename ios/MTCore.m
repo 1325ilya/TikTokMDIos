@@ -34,6 +34,7 @@ NSArray<NSDictionary *> *MTSections(void) {
                 Row(@"hide_photos", MTText(@"Скрывать фото-посты", @"Hide photo posts"), MTText(@"Свои посты не скрываются при доступном ID аккаунта", @"Own posts are preserved when the account ID is available"), @"photo.on.rectangle", @"toggle", @NO, nil),
                 Row(@"blocked_tags_on", MTText(@"Фильтровать хештеги", @"Filter hashtags"), MTText(@"Совпадение целого хештега, без учёта регистра", @"Whole hashtag matching, case insensitive"), @"number", @"toggle", @YES, nil),
                 Row(@"blocked_tags", MTText(@"Список хештегов", @"Blocked hashtags"), MTText(@"До 40 тегов, через запятую", @"Up to 40 tags, comma separated"), @"text.badge.minus", @"tags", @[], nil),
+                Row(@"only_tags", MTText(@"Только хештеги из списка", @"Only listed hashtags"), MTText(@"Показывать только посты с тегом из списка. Свои посты не скрываются", @"Show only posts carrying a listed tag. Own posts are preserved"), @"text.badge.plus", @"toggle", @NO, nil),
                 Row(@"feed_date_from", MTText(@"Посты не раньше", @"Posts not before"), MTText(@"Дата ГГГГ-ММ-ДД или пусто. Работает в ленте и в поиске.", @"YYYY-MM-DD or empty. Works in feed and search."), @"calendar.badge.clock", @"date", @"", nil),
                 Row(@"feed_date_to", MTText(@"Посты не позже", @"Posts not after"), MTText(@"Дата ГГГГ-ММ-ДД или пусто", @"YYYY-MM-DD or empty"), @"calendar", @"date", @"", nil)
             ]},
