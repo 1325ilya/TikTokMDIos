@@ -15,6 +15,7 @@ FOUNDATION_EXPORT UIColor *MTAccent(void);
 FOUNDATION_EXPORT UIColor *MTColor(NSString *hex);
 FOUNDATION_EXPORT void MTNote(NSString *message);
 FOUNDATION_EXPORT NSString *MTDiagnostics(void);
+FOUNDATION_EXPORT NSString *MTSupportPath(NSString *name);
 FOUNDATION_EXPORT void MTCapability(NSString *key, BOOL ready);
 FOUNDATION_EXPORT BOOL MTAvailable(NSString *key);
 FOUNDATION_EXPORT BOOL MTMatches(id object, SEL selector, const char *signature);

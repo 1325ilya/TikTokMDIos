@@ -1,4 +1,41 @@
 #import "MTCore.h"
+#import <execinfo.h>
+#import <fcntl.h>
+#import <unistd.h>
+
+static int MTTrailFD = -1;
+static CFAbsoluteTime MTLaunchTime;
+
+static void MTTrail(const char *text) {
+    int fd = MTTrailFD;
+    if (fd < 0 || !text) return;
+    (void)write(fd, text, strlen(text));
+    (void)write(fd, "\n", 1);
+    fsync(fd);
+}
+static void MTTrailText(NSString *text) {
+    MTTrail([NSString stringWithFormat:@"+%.1fs %@", CFAbsoluteTimeGetCurrent() - MTLaunchTime, text].UTF8String);
+}
+
+static NSString *MTUID;
+static NSString *MTCachedUID(void) {
+    @synchronized (NSString.class) { return MTUID; }
+}
+// Main thread only.
+static void MTAccountRemember(void) {
+    if (!NSThread.isMainThread) return;
+    @try {
+        id service = MTGet(NSClassFromString(@"AWEUserService"), @"sharedService");
+        NSString *uid = MTGet(service, @"userID");
+        NSString *sec = MTGet(MTGet(service, @"currentUserBasicModel"), @"secUserID");
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
+        if ([uid isKindOfClass:NSString.class] && uid.length) {
+            @synchronized (NSString.class) { MTUID = [uid copy]; }
+            [defaults setObject:uid forKey:@"account_uid"];
+        }
+        if ([sec isKindOfClass:NSString.class] && sec.length) [defaults setObject:sec forKey:@"account_sec_uid"];
+    } @catch (NSException *ignored) { }
+}
 
 static BOOL BoolProperty(id object, NSString *name) {
     SEL selector = NSSelectorFromString(name);
@@ -8,6 +45,29 @@ static BOOL BoolProperty(id object, NSString *name) {
 static long long LongProperty(id object, NSString *name) {
     SEL selector = NSSelectorFromString(name);
     return MTMatches(object, selector, "q@:") ? ((long long (*)(id, SEL))objc_msgSend)(object, selector) : 0;
+}
+
+// A numeric getter of whatever scalar or NSNumber type the model declares.
+static double NumberProperty(id object, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    if (!object || ![object respondsToSelector:selector]) return 0;
+    NSMethodSignature *signature = [object methodSignatureForSelector:selector];
+    if (signature.numberOfArguments != 2) return 0;
+    const char *type = signature.methodReturnType;
+    while (*type && strchr("rnNoORV", *type)) type++;
+    switch (*type) {
+        case 'q': case 'l': return (double)((long long (*)(id, SEL))objc_msgSend)(object, selector);
+        case 'Q': case 'L': return (double)((unsigned long long (*)(id, SEL))objc_msgSend)(object, selector);
+        case 'i': return ((int (*)(id, SEL))objc_msgSend)(object, selector);
+        case 'I': return ((unsigned int (*)(id, SEL))objc_msgSend)(object, selector);
+        case 'd': return ((double (*)(id, SEL))objc_msgSend)(object, selector);
+        case 'f': return ((float (*)(id, SEL))objc_msgSend)(object, selector);
+        case '@': {
+            id value = ((id (*)(id, SEL))objc_msgSend)(object, selector);
+            return [value isKindOfClass:NSNumber.class] || [value isKindOfClass:NSString.class] ? [value doubleValue] : 0;
+        }
+        default: return 0;
+    }
 }
 
 BOOL MTBlocksCaption(NSString *caption, NSArray<NSString *> *tags) {
@@ -50,8 +110,12 @@ NSArray *MTFilterFeed(NSArray *items) {
     NSArray *tags = MTBool(@"blocked_tags_on") ? allTags : @[];
     double after = DateBound(MTValue(@"feed_date_from"), NO), before = DateBound(MTValue(@"feed_date_to"), YES);
     if (!ads && !live && !photos && !softAds && !commission && !sensitive && !warnings && !recommends && !popups && !shop && !locations && !inserts && !ai && !tags.count && !only && !after && !before) return items;
-    id account = MTGet(NSClassFromString(@"AWEUserService"), @"sharedService");
-    NSString *uid = MTGet(account, @"userID");
+    static volatile int32_t entered;
+    BOOL trace = __sync_fetch_and_add(&entered, 1) < 3;
+    if (trace) MTTrailText([NSString stringWithFormat:@"feed filter enter (%lu items, %@ thread)", (unsigned long)items.count, NSThread.isMainThread ? @"main" : @"background"]);
+    // This runs on TikTok's parsing threads: account services must not be
+    // touched here, only the ID cached from the main thread.
+    NSString *uid = MTCachedUID();
     Class awemeClass = NSClassFromString(@"AWEAwemeModel");
     NSMutableArray *filtered;
     NSMutableDictionary<NSString *, NSNumber *> *reasons;
@@ -61,8 +125,9 @@ NSArray *MTFilterFeed(NSArray *items) {
         if ([item isKindOfClass:awemeClass]) {
             NSString *author = MTGet(MTGet(item, @"author"), @"userID");
             BOOL mine = [uid isKindOfClass:NSString.class] && uid.length && [uid isEqual:author];
-            NSNumber *created = MTGet(item, @"createTime");
-            if ([created isKindOfClass:NSNumber.class] && ((after && created.doubleValue < after) || (before && created.doubleValue > before))) reason = @"date";
+            double created = NumberProperty(item, @"createTime");
+            if (created > 1e11) created /= 1000;
+            if (created > 0 && ((after && created < after) || (before && created > before))) reason = @"date";
             if (!mine && !reason) {
                 id liveID = MTGet(item, @"liveId");
                 BOOL room = ([liveID isKindOfClass:NSNumber.class] && [liveID longLongValue] != 0) || MTGet(item, @"room") != nil || MTGet(item, @"streamUrlModel") != nil || BoolProperty(item, @"isLive");
@@ -96,10 +161,17 @@ NSArray *MTFilterFeed(NSArray *items) {
         index++;
     }
     if (filtered) {
+        // TikTok treats an empty page as the end of the feed (or worse), so
+        // at least one post always stays.
+        if (!filtered.count && items.count) [filtered addObject:items.lastObject];
         NSMutableArray *parts = [NSMutableArray array];
         for (NSString *key in [reasons.allKeys sortedArrayUsingSelector:@selector(compare:)]) [parts addObject:[NSString stringWithFormat:@"%@:%@", key, reasons[key]]];
-        MTNote([NSString stringWithFormat:@"feed: hidden %lu of %lu (%@)", (unsigned long)(items.count - filtered.count), (unsigned long)items.count, [parts componentsJoinedByString:@", "]]);
+        NSString *line = [NSString stringWithFormat:@"feed: hidden %lu of %lu (%@)", (unsigned long)(items.count - filtered.count), (unsigned long)items.count, [parts componentsJoinedByString:@", "]];
+        MTNote(line);
+        static volatile int32_t traced;
+        if (__sync_fetch_and_add(&traced, 1) < 5) MTTrailText(line);
     }
+    if (trace) MTTrailText(@"feed filter exit");
     return filtered ?: items;
 }
 
@@ -475,9 +547,6 @@ static void InstallRegion(void) {
             return ((id (*)(id, SEL, id))original)(object, NSSelectorFromString(@"tspk_network_objectForKey:"), key);
         };
     });
-    ready |= MTHook(@"NSLocale", @"countryCode", NO, "@@:", ^id(IMP original) {
-        return ^id(id object) { return enabled ? ISO : ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"countryCode")); };
-    });
 
     // MCC/MNC per-SDK readers.
     for (NSString *pair in @[@"HMDNetworkHelper:carrierMCC:mcc", @"HMDNetworkHelper:carrierMNC:mnc",
@@ -545,24 +614,20 @@ static void InstallRegion(void) {
     MTCapability(@"region_country", ready);
 }
 
+// Getter only, as on Android (FeedItemList.getItems): the stored list is never
+// rewritten, so nothing that indexes it in parallel can go out of step.
 static BOOL FeedListHook(NSString *className, NSString *property) {
-    NSString *setter = [@"set" stringByAppendingString:[property stringByReplacingCharactersInRange:NSMakeRange(0, 1) withString:[[property substringToIndex:1] uppercaseString]]];
-    SEL get = NSSelectorFromString(property), set = NSSelectorFromString([setter stringByAppendingString:@":"]);
-    BOOL done = MTHook(className, property, NO, "@@:", ^id(IMP original) {
+    SEL get = NSSelectorFromString(property);
+    return MTHook(className, property, NO, "@@:", ^id(IMP original) {
         return ^id(id object) {
             id items = ((id (*)(id, SEL))original)(object, get);
             @try { return MTFilterFeed(items); }
-            @catch (NSException *exception) { return items; }
+            @catch (NSException *exception) {
+                MTTrailText([NSString stringWithFormat:@"feed filter threw %@ — %@", exception.name, exception.reason ?: @"?"]);
+                return items;
+            }
         };
     });
-    done |= MTHook(className, [setter stringByAppendingString:@":"], NO, "v@:@", ^id(IMP original) {
-        return ^(id object, NSArray *items) {
-            @try { items = MTFilterFeed(items); }
-            @catch (NSException *exception) { }
-            ((void (*)(id, SEL, id))original)(object, set, items);
-        };
-    });
-    return done;
 }
 
 static BOOL InstallSplash(void) {
@@ -606,33 +671,17 @@ static BOOL InstallVoiceComments(void) {
     return done;
 }
 
-static void MTAccountRemember(id service) {
-    @try {
-        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
-        NSString *uid = MTGet(service, @"userID");
-        if ([uid isKindOfClass:NSString.class] && uid.length) [defaults setObject:uid forKey:@"account_uid"];
-        NSString *sec = MTGet(MTGet(service, @"currentUserBasicModel"), @"secUserID");
-        if ([sec isKindOfClass:NSString.class] && sec.length) [defaults setObject:sec forKey:@"account_sec_uid"];
-    } @catch (NSException *ignored) { }
-}
-
+// No hook: the account is read on the main thread once TikTok is up, and again
+// whenever the app comes back.
 static BOOL InstallAccount(void) {
-    SEL sel = NSSelectorFromString(@"userID");
-    BOOL done = MTHook(@"AWEUserService", @"userID", NO, "@@:", ^id(IMP original) {
-        return ^id(id object) {
-            id uid = ((id (*)(id, SEL))original)(object, sel);
-            // Reading the account inside the hooked call deadlocks when userID
-            // is invoked reentrantly during service init, so the snapshot is
-            // deferred to the main queue instead.
-            static BOOL asked;
-            if (!asked) {
-                asked = YES;
-                dispatch_async(dispatch_get_main_queue(), ^{ MTAccountRemember(object); });
-            }
-            return uid;
-        };
-    });
-    return done;
+    static BOOL scheduled;
+    if (!scheduled) {
+        scheduled = YES;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MTAccountRemember(); });
+    } else if (CFAbsoluteTimeGetCurrent() - MTLaunchTime > 15) {
+        MTAccountRemember();
+    }
+    return NSClassFromString(@"AWEUserService") != nil;
 }
 
 @interface MTLagWatch : NSObject
@@ -655,8 +704,14 @@ static BOOL InstallAccount(void) {
 @end
 
 void MTInstallHooks(void) {
+    static int installs;
+    BOOL first = installs++ == 0;
+    void (^stage)(NSString *) = ^(NSString *name) { if (first) MTTrailText([@"stage " stringByAppendingString:name]); };
+    stage(@"entries");
     InstallEntries();
+    stage(@"region");
     InstallRegion();
+    stage(@"account");
     MTCapability(@"account_id", InstallAccount());
     static MTLagWatch *lagWatch;
     if (!lagWatch) {
@@ -664,36 +719,16 @@ void MTInstallHooks(void) {
         CADisplayLink *timer = [CADisplayLink displayLinkWithTarget:lagWatch selector:@selector(tick:)];
         [timer addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     }
+    stage(@"feed");
     BOOL feed = NO;
-    for (NSString *owner in @[
-        @"TTKFeedBaseResponseModel", @"TTKFeedDataResponseResult",
-        @"AWEAwemeResponseModel", @"AWEFreshAwemeResponseModel", @"AWEAwemeMultiResponseModel",
-        @"AWEChallengeAwemeListResponse", @"AWEDiscoverCategoryModel", @"AWEDynamicPatchModel",
-        @"AWEExtensionAwemeResponseModel", @"AWEFavoriteAwemeListResponseModel",
-        @"AWEMusicAwemeListResponse", @"AWEMusicSquareResponse", @"AWEMusicGroupModel",
-        @"AWEMvAwemeResponse", @"AWEStickerAwemeResponse", @"AWEStickerAwemeListDataController",
-        @"AWETemplateAwemeResponse", @"AWEUniversalCreationAwemeResponse", @"AWEAggregatedListModel",
-        @"ACCFeedbackPostAwemeListResponse",
-        @"TTKAIMEAwemeListDataController", @"TTKAIMEDetailVideosResponseModel",
-        @"TTKAIPortraitAwemeListResponse", @"TTKCommerceCandidateResponseModel",
-        @"TTKCreditFavoriteAwemeListResponse", @"TTKCreditLikedAwemeListResponse",
-        @"TTKCreditMusicAwemeListResponse", @"TTKCreditPostAwemeListResponse",
-        @"TTKEffectDiscoveryDataController", @"TTKEffectResponse", @"TTKFavoriteAwemeListResponseModel",
-        @"TTKLSInnerFeedSourceListResponse", @"TTKLandscapeRecommendFeedResponseModel",
-        @"TTKMusicFanSpotlightVideoResponseModel", @"TTKMusicFeaturedVideoLibraryDataController",
-        @"TTKMusicFeaturedVideoResponseModel", @"TTKMusicTrendingHashtagVideosResponse",
-        @"TTKMusicDetailAIRemixInfo", @"TTKNearbyModel",
-        @"TTKOriginalSoundTrackFanSpotlightSectionModel", @"TTKPMTFanSpotlightResponse",
-        @"TTKSearchAwemePoolDataController",
-        @"TTKStoryArchiveAwemeListResponseModel", @"TTKStoryDetailEntranceResponseModel",
-        @"TTKTopicAwemeListResponse", @"TikTokNearbyFeedResponseModel",
-        @"BDXBridgeSyncDataWithInnerFeedMethodParamModel", @"BDXBridgeSyncDataWithDramaFeedMethodParamModel",
-        @"BDXBridgeTtlsOpenInnerFeedVideoMethodParamModel"
-    ]) feed |= FeedListHook(owner, @"awemeList");
-    for (NSString *owner in @[@"TTKFriendsFeedResponseModel", @"TTKRepostFeedResponseModel", @"TTKFeedUnseenVideosModel"]) feed |= FeedListHook(owner, @"items");
+    // The main feed, search results and hashtag pages.
+    for (NSString *owner in @[@"TTKFeedBaseResponseModel", @"TTKSearchAwemePoolDataController", @"AWEChallengeAwemeListResponse"]) feed |= FeedListHook(owner, @"awemeList");
+    stage(@"splash");
     InstallSplash();
+    stage(@"voice");
     MTCapability(@"voice_comments", InstallVoiceComments());
     MTCapability(@"update_check", YES);
+    stage(@"video");
     for (NSString *key in @[@"hide_ads", @"hide_live", @"hide_photos", @"blocked_tags", @"blocked_tags_on", @"only_tags", @"feed_date_from", @"feed_date_to", @"hide_soft_ads", @"hide_commission", @"hide_sensitive", @"hide_warnings", @"hide_recommendations", @"hide_popups", @"hide_shop", @"hide_location_ads", @"hide_insert_cards", @"hide_ai"]) MTCapability(key, feed);
     BOOL seekbar = BoolHook(@"AWEAwemeModel", @"progressBarVisible", @"seekbar_always", YES);
     seekbar &= BoolHook(@"AWEAwemeModel", @"progressBarDraggable", @"seekbar_always", YES);
@@ -703,6 +738,7 @@ void MTInstallHooks(void) {
     sound |= BoolHook(@"AWEAwemeModel", @"musicIsMutedDueToCopyrightViolation", @"sound_available", NO);
     BoolHook(@"AWEMusicModel", @"shouldMuteShare", @"sound_available", NO);
     MTCapability(@"sound_available", sound);
+    stage(@"downloads");
     BOOL downloads = URLHook(@"AWEVideoModel", @"downloadURL", @[@"downloadNoWatermarkURL", @"playURL"]);
     downloads |= BoolHook(@"AWEAwemeModel", @"allowDownloadWithoutWatermark", @"download_no_watermark", YES);
     downloads |= BoolHook(@"AWEAwemeModel", @"shouldAddCreatorTTSWatermarkWhenDownloading", @"download_no_watermark", NO);
@@ -720,72 +756,80 @@ void MTInstallHooks(void) {
     save |= BoolHook(@"AWECommerceCardStruct", @"disableDownload", @"download_always", NO);
     MTCapability(@"download_always", save);
     MTCapability(@"no_hdr", BoolHook(@"AWEAwemeModel", @"enableHDR", @"no_hdr", NO));
+    stage(@"appearance");
     MTInstallAppearance();
 }
 
-static void MTCrashRecord(NSString *text) {
-    @try {
-        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
-        NSMutableArray *log = [[defaults stringArrayForKey:@"diary"] mutableCopy] ?: [NSMutableArray array];
-        [log addObject:[NSString stringWithFormat:@"%@  Crash: %@", NSDate.date, text]];
-        if (log.count > 80) [log removeObjectsInRange:NSMakeRange(0, log.count - 80)];
-        [defaults setObject:log forKey:@"diary"];
-        [defaults setObject:text forKey:@"last_crash"];
-    } @catch (NSException *ignored) { }
-}
+// ---------------------------------------------------------------- crash trail
+//
+// Everything below survives any kind of process death: the trail is a plain
+// file written with write()+fsync, the signal handler only uses
+// async-signal-safe calls, and the launch marker counts a launch as crashed
+// whenever it did not live long enough to remove it -- which also catches
+// watchdog kills and crashes swallowed by TikTok's own crash reporter.
+
+static NSUncaughtExceptionHandler *MTPreviousHandler;
 
 static void MTCrash(NSException *exception) {
-    MTCrashRecord([NSString stringWithFormat:@"%@ — %@", exception.name, exception.reason ?: @"?"]);
+    MTTrailText([NSString stringWithFormat:@"CRASH exception %@ — %@\n%@", exception.name, exception.reason ?: @"?", [exception.callStackSymbols componentsJoinedByString:@"\n"]]);
+    if (MTPreviousHandler) MTPreviousHandler(exception);
 }
 
 static void MTSignal(int sig) {
     static volatile sig_atomic_t handling;
-    if (handling) { signal(sig, SIG_DFL); raise(sig); return; }
-    handling = 1;
-    const char *name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGBUS ? "SIGBUS" : sig == SIGABRT ? "SIGABRT" : "SIGTRAP";
-    MTCrashRecord([NSString stringWithFormat:@"%s in %s", name, [NSThread.callStackSymbols[2] UTF8String] ?: "?"]);
-    signal(sig, SIG_DFL);
-}
-
-static void MTCrashAlert(NSString *crash, NSUInteger tries) {
-    if (tries > 15) return;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(tries ? 2 * NSEC_PER_SEC : 0)), dispatch_get_main_queue(), ^{
-        UIViewController *top = MTTopController(MTActiveWindow());
-        if (!top || !top.view.window) MTCrashAlert(crash, tries + 1);
-        else MTShowMessage(top, @"MargyT crash", crash);
-    });
-}
-
-static void MTReportCrash(void) {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
-    NSString *crash = [defaults stringForKey:@"last_crash"];
-    if (!crash.length) return;
-    [defaults removeObjectForKey:@"last_crash"];
-    MTCrashAlert(crash, 0);
-}
-
-static BOOL MTCrashLooping(void) {
-    // Three unhandled exits in a row puts the next launch into a minimal mode:
-    // only the settings entry and the crash reporter load, so a bad hook can
-    // never keep the app from opening.
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"];
-    // A crash marker left by last session means this launch follows a real
-    // crash; a clean start just resets the streak.
-    BOOL crashed = [defaults stringForKey:@"last_crash"].length > 0;
-    NSInteger streak = crashed ? [defaults integerForKey:@"crash_streak"] + 1 : 0;
-    [defaults setInteger:streak forKey:@"crash_streak"];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(90 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[[NSUserDefaults alloc] initWithSuiteName:@"cat.narezany.margyt.ios"] setInteger:0 forKey:@"crash_streak"];
-    });
-    if (streak >= 3) {
-        MTNote([NSString stringWithFormat:@"Minimal mode after %ld consecutive crashes", (long)streak]);
-        // The crash is already in the diary; clearing the marker keeps the
-        // minimal launch from re-alerting into the same crash, and lets a
-        // surviving session reset the streak.
-        [defaults removeObjectForKey:@"last_crash"];
-        return YES;
+    int fd = MTTrailFD;
+    if (!handling && fd >= 0) {
+        handling = 1;
+        const char *name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGBUS ? "SIGBUS" : sig == SIGABRT ? "SIGABRT"
+                         : sig == SIGILL ? "SIGILL" : sig == SIGTRAP ? "SIGTRAP" : "SIGFPE";
+        (void)write(fd, "CRASH signal ", 13);
+        (void)write(fd, name, strlen(name));
+        (void)write(fd, "\n", 1);
+        void *frames[64];
+        int count = backtrace(frames, 64);
+        backtrace_symbols_fd(frames, count, fd);
+        fsync(fd);
     }
-    return NO;
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+// TikTok installs its own crash reporter after launch and takes the handlers
+// over, so ours are re-armed a few times; the previous exception handler is
+// still called afterwards.
+static void MTArmCrashHandlers(void) {
+    NSUncaughtExceptionHandler *current = NSGetUncaughtExceptionHandler();
+    if (current != MTCrash) {
+        MTPreviousHandler = current;
+        NSSetUncaughtExceptionHandler(MTCrash);
+    }
+    const int sigs[] = {SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGTRAP, SIGFPE};
+    for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) signal(sigs[i], MTSignal);
+}
+
+// Returns how many launches in a row died before surviving.
+static NSInteger MTBoot(void) {
+    NSFileManager *files = NSFileManager.defaultManager;
+    NSString *marker = MTSupportPath(@"launch.marker"), *log = MTSupportPath(@"crash.log"), *last = MTSupportPath(@"crash-last.log");
+    NSString *previous = [NSString stringWithContentsOfFile:marker encoding:NSUTF8StringEncoding error:nil];
+    NSInteger streak = previous ? previous.integerValue + 1 : 0;
+    if (previous) {
+        [files removeItemAtPath:last error:nil];
+        [files moveItemAtPath:log toPath:last error:nil];
+    } else {
+        [files removeItemAtPath:log error:nil];
+    }
+    [[NSString stringWithFormat:@"%ld", (long)streak] writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    MTTrailFD = open(log.fileSystemRepresentation, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    return streak;
+}
+
+static void MTSurvived(void) {
+    static BOOL done;
+    if (done) return;
+    done = YES;
+    [NSFileManager.defaultManager removeItemAtPath:MTSupportPath(@"launch.marker") error:nil];
+    MTTrail("survived");
 }
 
 __attribute__((constructor)) static void MTStart(void) {
@@ -793,16 +837,35 @@ __attribute__((constructor)) static void MTStart(void) {
         NSBundle *bundle = NSBundle.mainBundle;
         if (![[bundle objectForInfoDictionaryKey:@"CFBundleExecutable"] isEqual:@"TikTok"] || ![bundle.bundlePath.pathExtension isEqual:@"app"]) return;
         if (![[bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqual:@"46.9.0"]) return;
-        NSSetUncaughtExceptionHandler(MTCrash);
-        const int sigs[] = {SIGSEGV, SIGBUS, SIGABRT};
-        for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) signal(sigs[i], MTSignal);
-        MTNote(@"Starting development port; on-device compatibility unverified");
-        BOOL minimal = MTCrashLooping();
-        if (!minimal) InstallRegion();
+        MTLaunchTime = CFAbsoluteTimeGetCurrent();
+        NSInteger streak = MTBoot();
+        MTArmCrashHandlers();
+        // 0-1 crashes: everything. 2-3 in a row: only the menu entry, so the
+        // diagnostics can be read. 4+: nothing at all, to tell a bad hook from
+        // a bad IPA.
+        NSString *mode = streak >= 4 ? @"off" : streak >= 2 ? @"minimal" : @"full";
+        MTTrailText([NSString stringWithFormat:@"launch %@ build %@ streak %ld mode %@", MTVersion, [bundle objectForInfoDictionaryKey:@"CFBundleVersion"], (long)streak, mode]);
+        MTNote([NSString stringWithFormat:@"Starting MargyT %@ (%@ mode, %ld crashed launches before)", MTVersion, mode, (long)streak]);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MTSurvived(); });
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) { MTSurvived(); }];
+        if ([mode isEqual:@"off"]) return;
+        BOOL minimal = [mode isEqual:@"minimal"];
+        if (!minimal) {
+            MTTrail("stage region");
+            InstallRegion();
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            @try { minimal ? InstallEntries() : MTInstallHooks(); }
-            @catch (NSException *exception) { MTCrashRecord([NSString stringWithFormat:@"install: %@ — %@", exception.name, exception.reason ?: @"?"]); }
-            if (!minimal) MTReportCrash();
+            MTArmCrashHandlers();
+            @try {
+                if (minimal) { MTTrail("stage entries"); InstallEntries(); }
+                else MTInstallHooks();
+                MTTrail("hooks installed");
+            } @catch (NSException *exception) {
+                MTTrailText([NSString stringWithFormat:@"install failed: %@ — %@", exception.name, exception.reason ?: @"?"]);
+            }
+            for (int64_t delay = 3; delay <= 12; delay += 3) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay * (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{ MTArmCrashHandlers(); });
+            }
             if (!minimal) [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) { MTInstallHooks(); }];
         });
     }

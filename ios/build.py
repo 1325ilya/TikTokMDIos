@@ -158,7 +158,10 @@ def package(ipa, library, output):
             metadata['MinimumOSVersion'] = '15.0'
         metadata['MargyTPortVersion'] = '0.2.0-dev'
         # Bump the build number so reinstallers treat every repack as a newer build.
-        metadata['CFBundleVersion'] = str(int(time.time()))
+        # TikTok's own build number stays the leading component, so code that
+        # reads it as an integer still sees 469036.
+        original_build = str(metadata.get('CFBundleVersion', '0')).split('.')[0]
+        metadata['CFBundleVersion'] = f'{original_build}.{int(time.time())}'
         replacements = {executable: patched, info_path: plistlib.dumps(metadata, fmt=plistlib.FMT_BINARY)}
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=output.parent, suffix='.ipa.tmp', delete=False) as pending:

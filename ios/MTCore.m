@@ -221,16 +221,25 @@ BOOL MTAvailable(NSString *key) {
     MTState *state = MTState.shared;
     @synchronized (state) { return [state.capabilities containsObject:key]; }
 }
+NSString *MTSupportPath(NSString *name) {
+    NSString *folder = [NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"MargyT"];
+    [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+    return [folder stringByAppendingPathComponent:name];
+}
 NSString *MTDiagnostics(void) {
     MTState *state = MTState.shared;
+    NSString *crashed = [NSString stringWithContentsOfFile:MTSupportPath(@"crash-last.log") encoding:NSUTF8StringEncoding error:nil];
+    NSString *current = [NSString stringWithContentsOfFile:MTSupportPath(@"crash.log") encoding:NSUTF8StringEncoding error:nil];
     @synchronized (state) {
-        return [NSString stringWithFormat:@"MargyT iOS %@\nTikTok %@ (%@)\niOS %@\n\n%@\n\n%@",
+        return [NSString stringWithFormat:@"MargyT iOS %@\nTikTok %@ (%@)\niOS %@\n\n%@\n\n=== %@ ===\n%@\n\n=== %@ ===\n%@\n\n=== %@ ===\n%@",
                 MTVersion,
                 [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?",
                 [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"?",
                 UIDevice.currentDevice.systemVersion,
                 MTText(@"Проверка на устройстве не выполнена. Совместимость с iOS 27 не подтверждена.\nЖурнал не содержит токенов и содержимого сообщений.", @"Not verified on a device. iOS 27 compatibility is unconfirmed.\nNo tokens or message contents are logged."),
-                [state.log componentsJoinedByString:@"\n"]];
+                MTText(@"Последний упавший запуск", @"Last crashed launch"), crashed.length ? crashed : @"—",
+                MTText(@"Этот запуск", @"This launch"), current.length ? current : @"—",
+                MTText(@"Журнал", @"Diary"), [state.log componentsJoinedByString:@"\n"]];
     }
 }
 
