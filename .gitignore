@@ -1,0 +1,4 @@
+build/
+*.ipa
+__pycache__/
+.DS_Store
