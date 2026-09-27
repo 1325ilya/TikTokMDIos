@@ -124,6 +124,9 @@ NSArray<NSDictionary *> *MTSections(void) {
 }
 @end
 
+static volatile int32_t MTGeneration;
+NSInteger MTSettingsVersion(void) { return MTGeneration; }
+
 id MTValue(NSString *key) { return MTState.shared.values[key]; }
 BOOL MTBool(NSString *key) { return [MTValue(key) boolValue]; }
 
@@ -183,6 +186,7 @@ BOOL MTSet(NSString *key, id value) {
         [state.defaults setObject:value forKey:key];
         state.values = values;
     }
+    __sync_fetch_and_add(&MTGeneration, 1);
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSNotificationCenter.defaultCenter postNotificationName:MTSettingsChanged object:nil];
     });

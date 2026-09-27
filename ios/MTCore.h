@@ -11,6 +11,7 @@ FOUNDATION_EXPORT NSDictionary *MTCountry(void);
 FOUNDATION_EXPORT id MTValue(NSString *key);
 FOUNDATION_EXPORT BOOL MTBool(NSString *key);
 FOUNDATION_EXPORT BOOL MTSet(NSString *key, id value);
+FOUNDATION_EXPORT NSInteger MTSettingsVersion(void);
 FOUNDATION_EXPORT UIColor *MTAccent(void);
 FOUNDATION_EXPORT UIColor *MTColor(NSString *hex);
 FOUNDATION_EXPORT void MTNote(NSString *message);

@@ -132,6 +132,16 @@ NSArray *MTFilterFeed(NSArray *items) {
     NSArray *tags = MTBool(@"blocked_tags_on") && !only ? allTags : @[];
     double after = DateBound(MTValue(@"feed_date_from"), NO), before = DateBound(MTValue(@"feed_date_to"), YES);
     if (!ads && !live && !photos && !softAds && !commission && !sensitive && !warnings && !recommends && !popups && !shop && !locations && !inserts && !ai && !tags.count && !only && !after && !before) return items;
+    if (!items.count) return items;
+    // TikTok reads the same page through the getter dozens of times; it is
+    // filtered once per settings change. NSNull marks "nothing removed" so the
+    // page never retains itself.
+    static char cacheKey;
+    NSInteger version = MTSettingsVersion();
+    NSArray *cached = objc_getAssociatedObject(items, &cacheKey);
+    if ([cached isKindOfClass:NSArray.class] && cached.count == 2 && [cached[0] integerValue] == version) {
+        return cached[1] == NSNull.null ? items : cached[1];
+    }
     static volatile int32_t entered;
     BOOL trace = __sync_fetch_and_add(&entered, 1) < 3;
     if (trace) MTTrailText([NSString stringWithFormat:@"feed filter enter (%lu items, %@ thread)", (unsigned long)items.count, NSThread.isMainThread ? @"main" : @"background"]);
@@ -183,9 +193,6 @@ NSArray *MTFilterFeed(NSArray *items) {
         index++;
     }
     if (filtered) {
-        // TikTok treats an empty page as the end of the feed (or worse), so
-        // at least one post always stays.
-        if (!filtered.count && items.count) [filtered addObject:items.lastObject];
         NSMutableArray *parts = [NSMutableArray array];
         for (NSString *key in [reasons.allKeys sortedArrayUsingSelector:@selector(compare:)]) [parts addObject:[NSString stringWithFormat:@"%@:%@", key, reasons[key]]];
         NSString *line = [NSString stringWithFormat:@"feed: hidden %lu of %lu (%@)", (unsigned long)(items.count - filtered.count), (unsigned long)items.count, [parts componentsJoinedByString:@", "]];
@@ -194,7 +201,9 @@ NSArray *MTFilterFeed(NSArray *items) {
         if (__sync_fetch_and_add(&traced, 1) < 5) MTTrailText(line);
     }
     if (trace) MTTrailText(@"feed filter exit");
-    return filtered ?: items;
+    NSArray *result = filtered ? [filtered copy] : items;
+    objc_setAssociatedObject(items, &cacheKey, @[@(version), filtered ? result : NSNull.null], OBJC_ASSOCIATION_RETAIN);
+    return result;
 }
 
 static BOOL BoolHook(NSString *cls, NSString *selector, NSString *key, BOOL value) {
