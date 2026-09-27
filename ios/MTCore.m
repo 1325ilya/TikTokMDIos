@@ -32,7 +32,9 @@ NSArray<NSDictionary *> *MTSections(void) {
                 Row(@"hide_live", MTText(@"Скрывать трансляции", @"Hide live rooms"), @"", @"video.slash", @"toggle", @NO, nil),
                 Row(@"hide_photos", MTText(@"Скрывать фото-посты", @"Hide photo posts"), MTText(@"Свои посты не скрываются при доступном ID аккаунта", @"Own posts are preserved when the account ID is available"), @"photo.on.rectangle", @"toggle", @NO, nil),
                 Row(@"blocked_tags_on", MTText(@"Фильтровать хештеги", @"Filter hashtags"), MTText(@"Совпадение целого хештега, без учёта регистра", @"Whole hashtag matching, case insensitive"), @"number", @"toggle", @YES, nil),
-                Row(@"blocked_tags", MTText(@"Список хештегов", @"Blocked hashtags"), MTText(@"До 40 тегов, через запятую", @"Up to 40 tags, comma separated"), @"text.badge.minus", @"tags", @[], nil)
+                Row(@"blocked_tags", MTText(@"Список хештегов", @"Blocked hashtags"), MTText(@"До 40 тегов, через запятую", @"Up to 40 tags, comma separated"), @"text.badge.minus", @"tags", @[], nil),
+                Row(@"feed_date_from", MTText(@"Посты не раньше", @"Posts not before"), MTText(@"Дата ГГГГ-ММ-ДД или пусто. Работает в ленте и в поиске.", @"YYYY-MM-DD or empty. Works in feed and search."), @"calendar.badge.clock", @"date", @"", nil),
+                Row(@"feed_date_to", MTText(@"Посты не позже", @"Posts not after"), MTText(@"Дата ГГГГ-ММ-ДД или пусто", @"YYYY-MM-DD or empty"), @"calendar", @"date", @"", nil)
             ]},
             @{@"title": MTText(@"Видео", @"Video"), @"rows": @[
                 Row(@"sound_available", MTText(@"Не заглушать доступную дорожку", @"Keep available audio unmuted"), MTText(@"Только локальное заглушение. Удалённый сервером звук не восстанавливается.", @"Local muting only. Cannot restore audio removed by the server."), @"speaker.wave.2", @"toggle", @YES, nil),
@@ -47,7 +49,9 @@ NSArray<NSDictionary *> *MTSections(void) {
                 Row(@"download_no_watermark", MTText(@"Без водяного знака", @"Without watermarks"), MTText(@"Чистый URL видео и фото, если он есть в модели; иначе оригинал", @"Uses clean video/photo URLs when present; otherwise preserves the original"), @"drop.slash", @"toggle", @NO, nil),
                 Row(@"download_always", MTText(@"Разрешать сохранение в интерфейсе", @"Enable local save controls"), MTText(@"Не даёт доступа к закрытому контенту и не меняет серверные разрешения", @"Does not grant access to private content or change server permissions"), @"square.and.arrow.down", @"toggle", @NO, nil),
                 Row(@"save_avatars", MTText(@"Поделиться аватаром", @"Share an avatar"), MTText(@"Удерживайте открытый аватар: системное меню сохранения показанного изображения", @"Hold an open avatar to save/share the displayed image"), @"person.crop.circle", @"toggle", @YES, nil),
-                Row(@"save_stickers", MTText(@"Поделиться стикером комментария", @"Share a comment sticker"), MTText(@"Удерживайте превью. Сохраняет показанный кадр, не исходную анимацию и не стикеры переписки.", @"Hold the preview. Shares the displayed frame, not the original animation or chat stickers."), @"face.smiling", @"toggle", @YES, nil)
+                Row(@"save_stickers", MTText(@"Поделиться стикером комментария", @"Share a comment sticker"), MTText(@"Удерживайте превью. Сохраняет показанный кадр, не исходную анимацию и не стикеры переписки.", @"Hold the preview. Shares the displayed frame, not the original animation or chat stickers."), @"face.smiling", @"toggle", @YES, nil),
+                Row(@"download_button", MTText(@"Кнопка скачивания в ленте", @"Feed download button"), MTText(@"Добавляет кнопку над действиями справа: видео .mp4 и фото без водяного знака, в галерею или в меню «Поделиться»", @"Adds a button above the right action bar: watermark-free .mp4 video and photos, to Photos or the share sheet"), @"arrow.down.circle", @"toggle", @YES, nil),
+                Row(@"save_comment_media", MTText(@"Сохранять фото из комментариев", @"Save comment photos"), MTText(@"Удерживайте фото в комментариях. Сохраняется показанное изображение; вотермарка, вшитая автором, остаётся.", @"Hold a comment photo. Saves the displayed image; uploader-baked watermarks remain."), @"photo.badge.arrow.down", @"toggle", @YES, nil)
             ]},
             @{@"title": MTText(@"Типографика", @"Typography"), @"rows": @[
                 Row(@"font", MTText(@"Шрифт TikTok", @"TikTok typeface"), MTText(@"Только TUXLabel; новые надписи после смены. Размер и начертание сохраняются, где возможно.", @"TUXLabel only; newly configured labels. Keeps size and weight where possible."), @"textformat", @"choice", @"system", @[@[@"system", MTText(@"Оригинальный", @"Original")], @[@"rounded", MTText(@"Закруглённый", @"Rounded")], @[@"serif", MTText(@"С засечками", @"Serif")], @[@"monospaced", MTText(@"Моноширинный", @"Monospaced")]])
@@ -57,7 +61,7 @@ NSArray<NSDictionary *> *MTSections(void) {
                 Row(@"pending_server", MTText(@"Значки, градиенты и баннеры", @"Badges, gradients and banners"), MTText(@"Нужны iOS-привязки профиля и HTTPS на сервере. Токены через HTTP не отправляются.", @"Requires iOS profile bindings and an HTTPS server. Tokens are not sent over HTTP."), @"person.crop.rectangle", @"info", @NO, nil),
                 Row(@"pending_plugins", MTText(@"Плагины и заплатки", @"Plugins and patches"), MTText(@".mtp/classes.dex и Android-заплатки не исполняются на iOS. Нужны отдельный API и подписанные iOS-пакеты.", @"Android .mtp/classes.dex and patches cannot execute on iOS. A separate API and signed iOS packages are required."), @"puzzlepiece.extension", @"info", @NO, nil),
                 Row(@"pending_streaks", MTText(@"Автосерии и голосовые комментарии", @"Automatic streaks and voice comments"), MTText(@"iOS-контракты не проверены. Автоматические сообщения не отправляются.", @"iOS contracts have not been verified. No automatic messages are sent."), @"bubble.left.and.bubble.right", @"info", @NO, nil),
-                Row(@"pending_downloads", MTText(@"Изображения комментариев и стикеры чата", @"Comment images and chat stickers"), MTText(@"Оригинальные файлы, анимации и штампы комментариев требуют отдельных iOS-обработчиков.", @"Original files, animations and comment watermarks need separate iOS handlers."), @"photo", @"info", @NO, nil),
+                Row(@"pending_downloads", MTText(@"Стикеры чата и анимации комментариев", @"Chat stickers and comment animations"), MTText(@"Оригинальные анимированные файлы требуют отдельных iOS-обработчиков.", @"Original animated files need separate iOS handlers."), @"photo", @"info", @NO, nil),
                 Row(@"pending_updates", MTText(@"Обновления и пасхалка", @"Updates and Easter egg"), MTText(@"Android APK не предлагается как обновление iOS. Для обновлений нужен отдельный IPA-канал; пасхалка пока не перенесена.", @"Android APKs are not offered as iOS updates. Updates need a separate IPA channel; the Easter egg is not ported yet."), @"arrow.triangle.2.circlepath", @"info", @NO, nil)
             ]},
             @{@"title": MTText(@"Диагностика", @"Diagnostics"), @"rows": @[
@@ -142,6 +146,16 @@ BOOL MTSet(NSString *key, id value) {
             [clean addObject:tag];
         }
         value = clean.array;
+    }
+    if ([kind isEqual:@"date"]) {
+        if (![value isKindOfClass:NSString.class]) return NO;
+        if ([value length]) {
+            NSDateFormatter *formatter = [NSDateFormatter new];
+            formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+            formatter.dateFormat = @"yyyy-MM-dd";
+            formatter.lenient = NO;
+            if (![formatter dateFromString:value]) return NO;
+        }
     }
     MTState *state = MTState.shared;
     @synchronized (state) {

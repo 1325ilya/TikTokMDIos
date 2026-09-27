@@ -17,11 +17,26 @@ BOOL MTBlocksCaption(NSString *caption, NSArray<NSString *> *tags) {
     return NO;
 }
 
+static double DateBound(NSString *text, BOOL upper) {
+    if (![text isKindOfClass:NSString.class] || !text.length) return 0;
+    static NSDateFormatter *formatter;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        formatter = [NSDateFormatter new];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.dateFormat = @"yyyy-MM-dd";
+        formatter.lenient = NO;
+    });
+    NSDate *day = [formatter dateFromString:text];
+    return day ? day.timeIntervalSince1970 + (upper ? 86399 : 0) : 0;
+}
+
 NSArray *MTFilterFeed(NSArray *items) {
     if (![items isKindOfClass:NSArray.class]) return items;
     BOOL ads = MTBool(@"hide_ads"), live = MTBool(@"hide_live"), photos = MTBool(@"hide_photos");
     NSArray *tags = MTBool(@"blocked_tags_on") ? MTValue(@"blocked_tags") : @[];
-    if (!ads && !live && !photos && !tags.count) return items;
+    double after = DateBound(MTValue(@"feed_date_from"), NO), before = DateBound(MTValue(@"feed_date_to"), YES);
+    if (!ads && !live && !photos && !tags.count && !after && !before) return items;
     id account = MTGet(NSClassFromString(@"AWEUserService"), @"sharedService");
     NSString *uid = MTGet(account, @"userID");
     Class awemeClass = NSClassFromString(@"AWEAwemeModel");
@@ -32,7 +47,9 @@ NSArray *MTFilterFeed(NSArray *items) {
         if ([item isKindOfClass:awemeClass]) {
             NSString *author = MTGet(MTGet(item, @"author"), @"userID");
             BOOL mine = [uid isKindOfClass:NSString.class] && uid.length && [uid isEqual:author];
-            if (!mine) {
+            NSNumber *created = MTGet(item, @"createTime");
+            if ([created isKindOfClass:NSNumber.class] && ((after && created.doubleValue < after) || (before && created.doubleValue > before))) drop = YES;
+            if (!mine && !drop) {
                 id liveID = MTGet(item, @"liveId");
                 BOOL room = ([liveID isKindOfClass:NSNumber.class] && [liveID longLongValue] != 0) || MTGet(item, @"room") != nil;
                 SEL type = NSSelectorFromString(@"awemeType");
@@ -84,6 +101,159 @@ static BOOL URLHook(NSString *cls, NSString *selector, NSArray *alternatives) {
 static void SetObject(id object, NSString *name, id value) {
     SEL selector = NSSelectorFromString(name);
     if (MTMatches(object, selector, "v@:@")) ((void (*)(id, SEL, id))objc_msgSend)(object, selector, value);
+}
+
+static char MTDownloadKey;
+static char MTElementKey;
+static NSMutableSet *pending;
+
+static NSURL *MediaURL(id urlModel) {
+    id urls = MTGet(urlModel, @"originURLList");
+    if (![urls isKindOfClass:NSArray.class] || ![urls count]) urls = MTGet(urlModel, @"URLList");
+    for (id entry in [urls isKindOfClass:NSArray.class] ? urls : nil) {
+        NSURL *url = [entry isKindOfClass:NSURL.class] ? entry : [entry isKindOfClass:NSString.class] ? [NSURL URLWithString:entry] : nil;
+        if (url.host.length && [@[@"https", @"http"] containsObject:url.scheme.lowercaseString]) return url;
+    }
+    return nil;
+}
+
+@interface MTDownloader : NSObject
+@property (nonatomic, strong) NSMutableArray<NSURL *> *files;
+- (void)present:(UIButton *)sender;
+@end
+@implementation MTDownloader
++ (instancetype)shared {
+    static MTDownloader *downloader;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ downloader = [MTDownloader new]; downloader.files = [NSMutableArray array]; });
+    return downloader;
+}
+- (void)finish:(NSString *)path forVideo:(BOOL)video image:(UIImage *)image {
+    if (video) {
+        UISaveVideoAtPathToSavedPhotosAlbum(path, self, @selector(saved:didFinishSavingWithError:contextInfo:), NULL);
+    } else if (image) {
+        UIImageWriteToSavedPhotosAlbum(image, self, @selector(saved:didFinishSavingWithError:contextInfo:), NULL);
+    }
+}
+- (void)saved:(NSString *)path didFinishSavingWithError:(NSError *)error contextInfo:(void *)info {
+    UIViewController *top = MTTopController(MTActiveWindow());
+    if (error) MTShowMessage(top, @"MargyT", error.localizedDescription);
+    else {
+        [pending removeObject:self];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UILabel *toast = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 220, 40)];
+            toast.text = MTText(@"Сохранено в галерею", @"Saved to Photos");
+            toast.textAlignment = NSTextAlignmentCenter;
+            toast.textColor = UIColor.whiteColor;
+            toast.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+            toast.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.75];
+            toast.layer.cornerRadius = 20;
+            toast.clipsToBounds = YES;
+            toast.center = CGPointMake(top.view.bounds.size.width / 2, top.view.bounds.size.height * 0.75);
+            toast.alpha = 0;
+            [top.view addSubview:toast];
+            BOOL animate = !UIAccessibilityIsReduceMotionEnabled();
+            [UIView animateWithDuration:animate ? 0.25 : 0 animations:^{ toast.alpha = 1; } completion:^(BOOL done) {
+                [UIView animateWithDuration:animate ? 0.3 : 0 delay:1.4 options:0 animations:^{ toast.alpha = 0; } completion:^(BOOL gone) { [toast removeFromSuperview]; }];
+            }];
+        });
+    }
+}
+- (void)fetch:(NSURL *)url handler:(void (^)(NSURL *file))handler {
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
+    [[session downloadTaskWithURL:url completionHandler:^(NSURL *temporary, NSURLResponse *response, NSError *error) {
+        NSURL *file = temporary;
+        if (!error && file) {
+            NSString *extension = url.pathExtension.length ? url.pathExtension : @"mp4";
+            NSURL *kept = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingFormat:@"margyt-%@.%@", NSUUID.UUID.UUIDString, extension]];
+            if (![NSFileManager.defaultManager moveItemAtURL:file toURL:kept error:nil]) file = temporary;
+            else file = kept;
+            [MTDownloader.shared.files addObject:file];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ handler(error ? nil : file); });
+    }] resume];
+}
+- (void)present:(UIButton *)sender {
+    id element = objc_getAssociatedObject(sender, &MTElementKey);
+    id aweme = MTGet(element, @"model");
+    UIViewController *top = MTTopController(sender.window);
+    if (!aweme || !top || top.presentedViewController) return;
+    id video = MTGet(aweme, @"video");
+    id photos = MTGet(MTGet(aweme, @"photoAlbum"), @"photos");
+    if (!video && ![photos count]) return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"MargyT" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.popoverPresentationController.sourceView = sender;
+    sheet.popoverPresentationController.sourceRect = sender.bounds;
+    if (video) {
+        NSArray *order = MTBool(@"download_no_watermark") ? @[@"downloadNoWatermarkURL", @"playURL", @"downloadURL"] : @[@"downloadURL", @"downloadNoWatermarkURL", @"playURL"];
+        [sheet addAction:[UIAlertAction actionWithTitle:MTText(@"Видео в галерею (.mp4)", @"Video to Photos (.mp4)") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            NSURL *url;
+            for (NSString *name in order) if ((url = MediaURL(MTGet(video, name)))) break;
+            if (!url) { MTShowMessage(top, @"MargyT", MTText(@"URL видео не найден", @"No video URL found")); return; }
+            [self fetch:url handler:^(NSURL *file) {
+                if (!file) { MTShowMessage(top, @"MargyT", MTText(@"Загрузка не удалась", @"Download failed")); return; }
+                pending = pending ?: [NSMutableSet set];
+                [pending addObject:self];
+                [self finish:file.path forVideo:YES image:nil];
+            }];
+        }]];
+        [sheet addAction:[UIAlertAction actionWithTitle:MTText(@"Поделиться видео", @"Share video") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            NSURL *url;
+            for (NSString *name in order) if ((url = MediaURL(MTGet(video, name)))) break;
+            if (!url) { MTShowMessage(top, @"MargyT", MTText(@"URL видео не найден", @"No video URL found")); return; }
+            [self fetch:url handler:^(NSURL *file) {
+                if (!file) { MTShowMessage(top, @"MargyT", MTText(@"Загрузка не удалась", @"Download failed")); return; }
+                UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[file] applicationActivities:nil];
+                share.popoverPresentationController.sourceView = sender;
+                [top presentViewController:share animated:YES completion:nil];
+            }];
+        }]];
+    }
+    if ([photos isKindOfClass:NSArray.class] && [photos count]) {
+        [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:MTText(@"Все фото в галерею (%lu)", @"All photos to Photos (%lu)"), (unsigned long)[photos count]] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            pending = pending ?: [NSMutableSet set];
+            [pending addObject:self];
+            __block NSUInteger left = [photos count];
+            for (id photo in photos) {
+                NSURL *url = MediaURL(MTGet(photo, MTBool(@"download_no_watermark") ? @"originPhotoURL" : @"ownerWatermarkedPhotoURL")) ?: MediaURL(MTGet(photo, @"originPhotoURL"));
+                if (!url) { if (!--left) [pending removeObject:self]; continue; }
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                    UIImage *image = [UIImage imageWithData:[NSData dataWithContentsOfURL:url]];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (image) [self finish:nil forVideo:NO image:image];
+                        if (!--left && !image) [pending removeObject:self];
+                    });
+                });
+            }
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:MTText(@"Отмена", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [top presentViewController:sheet animated:!UIAccessibilityIsReduceMotionEnabled() completion:nil];
+}
+@end
+
+static BOOL InstallDownloadButton(void) {
+    return MTHook(@"AWEPlayInteractionRightElement", @"willDisplay", NO, "v@:", ^id(IMP original) {
+        return ^(id element) {
+            ((void (*)(id, SEL))original)(element, @selector(willDisplay));
+            if (!MTBool(@"download_button")) return;
+            UIView *view = MTGet(element, @"viewIfLoaded");
+            if (!view || objc_getAssociatedObject(view, &MTDownloadKey)) return;
+            UIImage *icon = [UIImage systemImageNamed:@"arrow.down.circle" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:26 weight:UIImageSymbolWeightSemibold]];
+            UIButton *button = [UIButton systemButtonWithImage:icon target:MTDownloader.shared action:@selector(present:)];
+            button.tintColor = UIColor.whiteColor;
+            button.accessibilityIdentifier = @"margyt.download";
+            button.accessibilityLabel = MTText(@"Скачать без водяного знака", @"Download without watermark");
+            objc_setAssociatedObject(button, &MTElementKey, element, OBJC_ASSOCIATION_ASSIGN);
+            if ([view isKindOfClass:UIStackView.class]) [(UIStackView *)view addArrangedSubview:button];
+            else {
+                button.frame = CGRectMake(view.bounds.size.width - 56, 12, 44, 44);
+                button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+                [view addSubview:button];
+            }
+            objc_setAssociatedObject(view, &MTDownloadKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        };
+    });
 }
 
 @interface MTEntry : NSObject
@@ -192,17 +362,22 @@ static void InstallRegion(void) {
     MTCapability(@"region_country", ready);
 }
 
-void MTInstallHooks(void) {
-    InstallEntries();
-    InstallRegion();
-    BOOL feed = MTHook(@"TTKFeedBaseResponseModel", @"awemeList", NO, "@@:", ^id(IMP original) {
+static BOOL FeedListHook(NSString *className) {
+    return MTHook(className, @"awemeList", NO, "@@:", ^id(IMP original) {
         return ^id(id object) {
             id items = ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"awemeList"));
             @try { return MTFilterFeed(items); }
             @catch (NSException *exception) { return items; }
         };
     });
-    for (NSString *key in @[@"hide_ads", @"hide_live", @"hide_photos", @"blocked_tags", @"blocked_tags_on"]) MTCapability(key, feed);
+}
+
+void MTInstallHooks(void) {
+    InstallEntries();
+    InstallRegion();
+    BOOL feed = FeedListHook(@"TTKFeedBaseResponseModel");
+    feed |= FeedListHook(@"TTKSearchAwemePoolDataController");
+    for (NSString *key in @[@"hide_ads", @"hide_live", @"hide_photos", @"blocked_tags", @"blocked_tags_on", @"feed_date_from", @"feed_date_to"]) MTCapability(key, feed);
     BOOL seekbar = BoolHook(@"AWEAwemeModel", @"progressBarVisible", @"seekbar_always", YES);
     seekbar &= BoolHook(@"AWEAwemeModel", @"progressBarDraggable", @"seekbar_always", YES);
     MTCapability(@"seekbar_always", seekbar);
@@ -212,10 +387,13 @@ void MTInstallHooks(void) {
     BoolHook(@"AWEMusicModel", @"shouldMuteShare", @"sound_available", NO);
     MTCapability(@"sound_available", sound);
     BOOL downloads = URLHook(@"AWEVideoModel", @"downloadURL", @[@"downloadNoWatermarkURL", @"playURL"]);
+    downloads |= BoolHook(@"AWEAwemeModel", @"allowDownloadWithoutWatermark", @"download_no_watermark", YES);
+    downloads |= BoolHook(@"AWEAwemeModel", @"shouldAddCreatorTTSWatermarkWhenDownloading", @"download_no_watermark", NO);
     URLHook(@"AWEVideoModel", @"h264DownloadURL", @[@"downloadNoWatermarkURL", @"playURL"]);
     URLHook(@"AWEPhotoAlbumPhoto", @"ownerWatermarkedPhotoURL", @[@"originPhotoURL"]);
     URLHook(@"AWEPhotoAlbumPhoto", @"userWatermarkedPhotoURL", @[@"originPhotoURL"]);
     MTCapability(@"download_no_watermark", downloads);
+    MTCapability(@"download_button", InstallDownloadButton());
     BOOL save = BoolHook(@"AWEAwemeModel", @"preventDownload", @"download_always", NO);
     BoolHook(@"AWEAwemeModel", @"disableDownload", @"download_always", NO);
     BoolHook(@"AWEUserModel", @"preventDownload", @"download_always", NO);

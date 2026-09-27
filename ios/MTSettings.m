@@ -229,6 +229,7 @@ static UIVisualEffect *Glass(void) {
     if ([kind isEqual:@"choice"]) for (NSArray *choice in row[@"choices"]) if ([choice[0] isEqual:MTValue(key)]) [details insertObject:choice[1] atIndex:0];
     if ([kind isEqual:@"country"]) [details insertObject:MTCountry()[@"name"] atIndex:0];
     if ([kind isEqual:@"tags"]) [details insertObject:[MTValue(key) componentsJoinedByString:@", "] atIndex:0];
+    if ([kind isEqual:@"date"]) [details insertObject:[MTValue(key) length] ? MTValue(key) : MTText(@"не задано", @"not set") atIndex:0];
     if (!available) [details addObject:MTText(@"Недоступно: обработчик не найден", @"Unavailable: hook not found")];
     content.secondaryText = [details componentsJoinedByString:@"\n"];
     content.textProperties.numberOfLines = 0;
@@ -294,6 +295,22 @@ static UIVisualEffect *Glass(void) {
             NSString *text = weakAlert.textFields.firstObject.text ?: @"";
             BOOL valid = text.length <= 4096 && MTSet(key, [text componentsSeparatedByString:@","]);
             if (!valid) dispatch_async(dispatch_get_main_queue(), ^{ MTShowMessage(self, MTText(@"Проверьте хештеги", @"Check your hashtags"), MTText(@"Не более 40 тегов по 100 символов. Только буквы, цифры и подчёркивание.", @"At most 40 tags of 100 characters. Letters, numbers and underscores only.")); });
+        }]];
+        [self presentViewController:alert animated:YES completion:nil];
+    } else if ([kind isEqual:@"date"]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:row[@"title"] message:row[@"detail"] preferredStyle:UIAlertControllerStyleAlert];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+            field.text = MTValue(key);
+            field.autocorrectionType = UITextAutocorrectionTypeNo;
+            field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+            field.placeholder = @"YYYY-MM-DD";
+        }];
+        [alert addAction:[UIAlertAction actionWithTitle:MTText(@"Отмена", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
+        __weak UIAlertController *weakAlert = alert;
+        [alert addAction:[UIAlertAction actionWithTitle:MTText(@"Сохранить", @"Save") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            NSString *text = [weakAlert.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+            if (!MTSet(key, text)) dispatch_async(dispatch_get_main_queue(), ^{ MTShowMessage(self, row[@"title"], MTText(@"Формат ГГГГ-ММ-ДД, например 2025-01-31. Очистите поле, чтобы отключить.", @"YYYY-MM-DD format, e.g. 2025-01-31. Clear the field to disable.")); });
         }]];
         [self presentViewController:alert animated:YES completion:nil];
     }

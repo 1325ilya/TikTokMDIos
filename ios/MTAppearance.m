@@ -21,11 +21,22 @@ static NSInteger RequestedFPS(void) {
 - (void)held:(UILongPressGestureRecognizer *)gesture;
 @end
 @implementation MTImageShare
+static UIImageView *DeepestImage(UIView *view, NSUInteger depth) {
+    if (depth > 8) return nil;
+    UIImageView *best = [view isKindOfClass:UIImageView.class] ? (UIImageView *)view : nil;
+    for (UIView *subview in view.subviews) {
+        UIImageView *found = DeepestImage(subview, depth + 1);
+        CGFloat area = found.bounds.size.width * found.bounds.size.height;
+        if (found.image && (!best.image || area > best.bounds.size.width * best.bounds.size.height)) best = found;
+    }
+    return best;
+}
+
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other { return YES; }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)recognizer { return MTBool(self.key); }
 - (void)held:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan || !MTBool(self.key)) return;
-    id imageView = [self.key isEqual:@"save_avatars"] ? MTGet(self.view, @"avatar") : self.view;
+    id imageView = [self.key isEqual:@"save_avatars"] ? MTGet(self.view, @"avatar") : DeepestImage(self.view, 0);
     UIImage *image = [imageView isKindOfClass:UIImageView.class] ? ((UIImageView *)imageView).image : nil;
     UIViewController *top = MTTopController(self.view.window);
     if (!image || !top || top.presentedViewController || !top.view.window) return;
@@ -57,6 +68,7 @@ static BOOL InstallImageSharing(NSString *className, NSString *key) {
 void MTInstallAppearance(void) {
     MTCapability(@"save_avatars", InstallImageSharing(@"AWEProfileImagePreviewView", @"save_avatars"));
     MTCapability(@"save_stickers", InstallImageSharing(@"TTKCommentStickerPreviewView", @"save_stickers"));
+    MTCapability(@"save_comment_media", InstallImageSharing(@"AWECommentPanelL8PhotoCell", @"save_comment_media"));
     BOOL font = MTHook(@"TUXLabel", @"setFont:", NO, "v@:@", ^id(IMP original) {
         return ^(UILabel *label, UIFont *requested) {
             NSString *choice = MTValue(@"font");
