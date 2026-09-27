@@ -495,7 +495,8 @@ __attribute__((constructor)) static void MTStart(void) {
         if (![[bundle objectForInfoDictionaryKey:@"CFBundleExecutable"] isEqual:@"TikTok"] || ![bundle.bundlePath.pathExtension isEqual:@"app"]) return;
         if (![[bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqual:@"46.9.0"]) return;
         NSSetUncaughtExceptionHandler(MTCrash);
-        for (int sig : (int[]){SIGSEGV, SIGBUS, SIGABRT}) signal(sig, MTSignal);
+        const int sigs[] = {SIGSEGV, SIGBUS, SIGABRT};
+        for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) signal(sigs[i], MTSignal);
         MTNote(@"Starting development port; on-device compatibility unverified");
         InstallRegion();
         dispatch_async(dispatch_get_main_queue(), ^{
