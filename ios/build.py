@@ -8,6 +8,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -156,6 +157,8 @@ def package(ipa, library, output):
         if minimum < (15, 0):
             metadata['MinimumOSVersion'] = '15.0'
         metadata['MargyTPortVersion'] = '0.2.0-dev'
+        # Bump the build number so reinstallers treat every repack as a newer build.
+        metadata['CFBundleVersion'] = str(int(time.time()))
         replacements = {executable: patched, info_path: plistlib.dumps(metadata, fmt=plistlib.FMT_BINARY)}
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=output.parent, suffix='.ipa.tmp', delete=False) as pending:

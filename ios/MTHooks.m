@@ -5,6 +5,11 @@ static BOOL BoolProperty(id object, NSString *name) {
     return MTMatches(object, selector, "B@:") && ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
 }
 
+static long long LongProperty(id object, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    return MTMatches(object, selector, "q@:") ? ((long long (*)(id, SEL))objc_msgSend)(object, selector) : 0;
+}
+
 BOOL MTBlocksCaption(NSString *caption, NSArray<NSString *> *tags) {
     if (![caption isKindOfClass:NSString.class] || !caption.length || caption.length > 16000 || !tags.count) return NO;
     static NSRegularExpression *expression;
@@ -56,11 +61,11 @@ NSArray *MTFilterFeed(NSArray *items) {
             if ([created isKindOfClass:NSNumber.class] && ((after && created.doubleValue < after) || (before && created.doubleValue > before))) drop = YES;
             if (!mine && !drop) {
                 id liveID = MTGet(item, @"liveId");
-                BOOL room = ([liveID isKindOfClass:NSNumber.class] && [liveID longLongValue] != 0) || MTGet(item, @"room") != nil;
-                SEL type = NSSelectorFromString(@"awemeType");
-                if (MTMatches(item, type, "q@:")) room |= ((NSInteger (*)(id, SEL))objc_msgSend)(item, type) == 101;
-                drop = (ads && BoolProperty(item, @"isAds")) || (live && room);
-                if (!room) drop |= (photos && MTGet(item, @"photoAlbum") != nil) || MTBlocksCaption(MTGet(item, @"descriptionString"), tags);
+                BOOL room = ([liveID isKindOfClass:NSNumber.class] && [liveID longLongValue] != 0) || MTGet(item, @"room") != nil || MTGet(item, @"streamUrlModel") != nil || BoolProperty(item, @"isLive");
+                NSInteger awemeType = (NSInteger)LongProperty(item, @"awemeType");
+                room |= awemeType == 101;
+                drop = (ads && (BoolProperty(item, @"isAds") || BoolProperty(item, @"isAdsOrPseudoAds") || awemeType == 104 || awemeType == 105)) || (live && room);
+                if (!room) drop |= (photos && (MTGet(item, @"photoAlbum") != nil || BoolProperty(item, @"isPhotoMode"))) || MTBlocksCaption(MTGet(item, @"descriptionString"), tags);
                 if (!drop && softAds) drop = BoolProperty(item, @"isSoftAds") || BoolProperty(item, @"hasAd") || BoolProperty(item, @"hasAdFormURL") || BoolProperty(item, @"hasAdLandingPage");
                 if (!drop && commission) drop = MTGet(item, @"promoteTagInfo") != nil || MTGet(item, @"boostTagInfo") != nil || MTGet(item, @"musicPromotionTag") != nil;
                 if (!drop && sensitive) drop = MTGet(item, @"riskInfoModel") != nil;
@@ -70,16 +75,20 @@ NSArray *MTFilterFeed(NSArray *items) {
                     if (!drop) { id users = MTGet(item, @"feedRecommendUserList"); drop = [users isKindOfClass:NSArray.class] && [users count] > 0; }
                 }
                 if (!drop && popups) { id stickers = MTGet(item, @"interactionStickers"); drop = [stickers isKindOfClass:NSArray.class] && [stickers count] > 0; }
-                if (!drop && shop) drop = MTGet(item, @"commerceModel") != nil || MTGet(item, @"feedProductSelectionCardProductInfoModel") != nil || MTGet(item, @"activityPendant") != nil;
-                if (!drop && locations) drop = MTGet(item, @"poiRetagConfig") != nil || [MTGet(item, @"poiRetagText") isKindOfClass:NSString.class] || [MTGet(item, @"poiRetagSignal") boolValue];
+                if (!drop && shop) drop = BoolProperty(item, @"isCommerce") || MTGet(item, @"commerceModel") != nil || MTGet(item, @"feedProductSelectionCardProductInfoModel") != nil || MTGet(item, @"activityPendant") != nil;
+                if (!drop && locations) drop = MTGet(item, @"localServiceInfo") != nil || MTGet(item, @"poiRetagConfig") != nil || [MTGet(item, @"poiRetagText") isKindOfClass:NSString.class] || [MTGet(item, @"poiRetagSignal") boolValue];
                 if (!drop && inserts) drop = MTGet(item, @"card") != nil || MTGet(item, @"feed_cardInsertConfig") != nil;
-                if (!drop && ai) drop = MTGet(item, @"aigcInfoModel") != nil || MTGet(item, @"moderationAigcInfoModel") != nil || MTGet(item, @"creationAICastInfo") != nil || MTGet(item, @"creationAIPortraitInfo") != nil;
+                if (!drop && ai) {
+                    id aigc = MTGet(item, @"aigcInfoModel");
+                    drop = (aigc && (BoolProperty(aigc, @"createByAI") || LongProperty(aigc, @"aigcLabelType") != 0)) || MTGet(item, @"moderationAigcInfoModel") != nil || MTGet(item, @"creationAICastInfo") != nil || MTGet(item, @"creationAIPortraitInfo") != nil;
+                }
             }
         }
         if (drop && !filtered) filtered = [[items subarrayWithRange:NSMakeRange(0, index)] mutableCopy];
         if (!drop && filtered) [filtered addObject:item];
         index++;
     }
+    if (filtered) MTNote([NSString stringWithFormat:@"feed: hidden %lu of %lu", (unsigned long)(items.count - filtered.count), (unsigned long)items.count]);
     return filtered ?: items;
 }
 
@@ -94,6 +103,7 @@ static BOOL BoolHook(NSString *cls, NSString *selector, NSString *key, BOOL valu
 
 static BOOL UsableURL(id model) {
     id urls = MTGet(model, @"originURLList");
+    if (![urls isKindOfClass:NSArray.class] || ![urls count]) urls = MTGet(model, @"URLList");
     if (![urls isKindOfClass:NSArray.class]) return NO;
     for (id entry in urls) {
         NSURL *url = [entry isKindOfClass:NSURL.class] ? entry : [entry isKindOfClass:NSString.class] ? [NSURL URLWithString:entry] : nil;
@@ -381,13 +391,22 @@ static void InstallRegion(void) {
 }
 
 static BOOL FeedListHook(NSString *className) {
-    return MTHook(className, @"awemeList", NO, "@@:", ^id(IMP original) {
+    SEL get = NSSelectorFromString(@"awemeList"), set = NSSelectorFromString(@"setAwemeList:");
+    BOOL done = MTHook(className, @"awemeList", NO, "@@:", ^id(IMP original) {
         return ^id(id object) {
-            id items = ((id (*)(id, SEL))original)(object, NSSelectorFromString(@"awemeList"));
+            id items = ((id (*)(id, SEL))original)(object, get);
             @try { return MTFilterFeed(items); }
             @catch (NSException *exception) { return items; }
         };
     });
+    done |= MTHook(className, @"setAwemeList:", NO, "v@:@", ^id(IMP original) {
+        return ^(id object, NSArray *items) {
+            @try { items = MTFilterFeed(items); }
+            @catch (NSException *exception) { }
+            ((void (*)(id, SEL, id))original)(object, set, items);
+        };
+    });
+    return done;
 }
 
 void MTInstallHooks(void) {
